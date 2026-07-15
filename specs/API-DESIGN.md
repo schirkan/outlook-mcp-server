@@ -1,0 +1,352 @@
+# API-Design — MCP-Tools & Resources
+
+Alle Tools folgen der Naming-Convention von Microsoft Graph (Mail: `messages`, `mailFolders`, Calendar: `events`, `calendars`), sind aber technisch unabhängig (COM-Interop statt Graph/HTTP). Property-Namen sind 1:1 zu Microsoft Graph, damit Graph-Client-Code mit minimalen Anpassungen auch gegen diesen Server läuft.
+
+Tool-Eingaben sind JSON-Objekte; Tool-Ausgaben sind JSON-Objekte. Datums-/Zeit-Werte: ISO 8601 mit Time-Zone (z. B. `2026-07-15T14:00:00` + `timeZone: "Europe/Berlin"`). UTC-Werte mit `Z`-Suffix.
+
+## Mail
+
+### `listMailFolders`
+
+**Beschreibung**: Listet alle Mail-Ordner im Standard-Postfach auf (Inbox, Drafts, SentItems, DeletedItems + Custom-Ordner).
+
+**Input**:
+- `parentFolderId` (optional, string): EntryID eines Parent-Ordners. Default = Root.
+- `includeHidden` (optional, bool): Default `false`.
+
+**Output**:
+```json
+{
+  "value": [
+    {
+      "id": "00000000...EntryID",
+      "displayName": "Inbox",
+      "wellKnownName": "inbox",
+      "parentFolderId": "00000000...",
+      "childFolderCount": 3,
+      "totalItemCount": 1234,
+      "unreadItemCount": 7
+    }
+  ]
+}
+```
+
+### `getMailFolder`
+
+**Input**: `folderId` (string, required)
+**Output**: einzelner Folder (gleiche DTO wie oben).
+
+### `listMails`
+
+**Beschreibung**: Listet Mails in einem Ordner. Sortierung: neueste zuerst (ReceivedTime desc).
+
+**Input**:
+- `folderId` (string, required) — oder well-known name (`inbox`, `drafts`, `sentItems`, `deletedItems`, `junkEmail`, `archive`, `outbox`)
+- `top` (int, default 25, max 100)
+- `skip` (int, default 0)
+- `filter` (optional, string): Outlook-DASL-Filter (z. B. `"@SQL=urn:schemas:httpmail:subject LIKE '%urgent%'"`)
+- `search` (optional, string): Volltext-Quicksearch über Subject + BodyPreview (Outlook-InstanteSearch)
+
+**Output**:
+```json
+{
+  "value": [
+    {
+      "id": "00000000...EntryID",
+      "conversationId": "...",
+      "subject": "Re: Projekt-Status",
+      "bodyPreview": "Hi Martin, anbei der Status...",
+      "from": { "emailAddress": { "name": "Chef", "address": "chef@firma.de" } },
+      "toRecipients": [{ "emailAddress": { "name": "Martin", "address": "martin@firma.de" } }],
+      "receivedDateTime": "2026-07-15T10:23:00Z",
+      "sentDateTime": "2026-07-15T10:22:47Z",
+      "hasAttachments": true,
+      "importance": "high",
+      "isRead": false,
+      "categories": ["Projekt-X"]
+    }
+  ],
+  "nextSkip": 25
+}
+```
+
+### `getMail`
+
+**Input**: `id` (string, required), `includeBody` (bool, default true)
+**Output**:
+```json
+{
+  "id": "...",
+  "subject": "...",
+  "body": { "contentType": "html", "content": "..." },
+  "from": { "emailAddress": { "name": "...", "address": "..." } },
+  "toRecipients": [...],
+  "ccRecipients": [...],
+  "bccRecipients": [...],
+  "receivedDateTime": "...",
+  "sentDateTime": "...",
+  "hasAttachments": true,
+  "importance": "normal",
+  "isRead": true,
+  "categories": [],
+  "conversationId": "..."
+}
+```
+
+### `getMailHeaders`
+
+**Input**: `id` (string, required)
+**Output**: `{ "internetMessageHeaders": [{ "name": "X-Mailer", "value": "..." }, ...] }`
+Implementierung: `MailItem.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x007D001F")` (PR_TRANSPORT_MESSAGE_HEADERS).
+
+### `listAttachments`
+
+**Input**: `mailId` (string, required)
+**Output**: `[{ "id": "...", "name": "report.pdf", "contentType": "application/pdf", "size": 12345, "isInline": false }]`
+
+### `getAttachment`
+
+**Input**: `mailId` (string, required), `attachmentId` (string, required)
+**Output**: `{ "id": "...", "name": "...", "contentType": "...", "size": 12345, "contentBase64": "..." }`
+Limit: `MaxAttachmentBytes` aus Config.
+
+### `sendMail`
+
+**Beschreibung**: Erstellt und versendet eine neue Mail. Bei `replyToId` wird der Reply/ReplyAll/Forward erzeugt.
+
+**Input**:
+```json
+{
+  "to": ["empfaenger@firma.de"],
+  "cc": [],
+  "bcc": [],
+  "subject": "Statusupdate",
+  "body": { "contentType": "text", "content": "Hi, ..." },
+  "importance": "normal",
+  "attachments": [
+    { "name": "report.pdf", "contentBase64": "...", "contentType": "application/pdf" }
+  ],
+  "replyToId": null,
+  "replyAll": false,
+  "forwardFromId": null,
+  "sendAt": null,
+  "saveToSentItems": true
+}
+```
+
+**Output**: `{ "sent": true, "id": "EntryID-..." }` (id der gesendeten Mail in SentItems)
+
+### `createDraft`
+
+**Input**: wie `sendMail` ohne `saveToSentItems`, plus optional `replyToId`
+**Output**: `{ "id": "EntryID-..." }`
+
+### `updateMail`
+
+**Input**: `id` (string, required), beliebige patchbare Felder (`isRead`, `categories`, `importance`)
+**Output**: `{ "id": "..." }`
+
+### `moveMail` / `copyMail`
+
+**Input**: `id`, `destinationFolderId`
+**Output**: `{ "newId": "..." }` (EntryID im neuen Folder; ID kann sich ändern — wie bei Graph)
+
+### `deleteMail`
+
+**Input**: `id`, `permanent` (bool, default false — false = in DeletedItems, true = hart löschen)
+**Output**: `{ "deleted": true }`
+
+### `searchMails`
+
+**Input**: `query` (string, required), `folderId` (optional), `top` (default 25)
+**Output**: wie `listMails` (Advanced-Filter: DASL, alle Ordner wenn `folderId=null`)
+
+## Kalender
+
+### `listCalendars`
+
+**Input**: (keine)
+**Output**:
+```json
+{
+  "value": [
+    {
+      "id": "00000000...EntryID-Cal",
+      "name": "Kalender",
+      "isDefaultCalendar": true,
+      "canEdit": true,
+      "owner": "martin@firma.de"
+    }
+  ]
+}
+```
+
+### `getCalendar`
+
+**Input**: `id`
+**Output**: einzelner Calendar
+
+### `listEvents` (CalendarView)
+
+**Input**:
+- `calendarId` (string, optional — default = default calendar)
+- `startDateTime` (DateTimeTimeZone, required)
+- `endDateTime` (DateTimeTimeZone, required)
+- `top` (int, default 50, max 250)
+- `skip` (int, default 0)
+- `filter` (optional, string): z. B. `"showAs eq 'busy'"` (einfache Equality-Filter, intern auf DASL gemappt)
+
+**Output**:
+```json
+{
+  "value": [
+    {
+      "id": "00000000...EntryID",
+      "subject": "Team-Meeting",
+      "bodyPreview": "Agenda: Status, Roadmap",
+      "start": { "dateTime": "2026-07-16T14:00:00", "timeZone": "Europe/Berlin" },
+      "end":   { "dateTime": "2026-07-16T15:00:00", "timeZone": "Europe/Berlin" },
+      "isAllDay": false,
+      "location": { "displayName": "Konferenzraum 3" },
+      "organizer": { "emailAddress": { "name": "Chef", "address": "chef@firma.de" } },
+      "attendees": [
+        { "emailAddress": { "name": "Alice", "address": "alice@firma.de" }, "type": "required", "status": { "response": "accepted" } }
+      ],
+      "importance": "normal",
+      "sensitivity": "normal",
+      "showAs": "busy",
+      "isCancelled": false,
+      "isReminderOn": true,
+      "reminderMinutesBeforeStart": 15,
+      "categories": []
+    }
+  ],
+  "nextSkip": 50
+}
+```
+
+### `getEvent`
+
+**Input**: `id`
+**Output**: einzelnes Event (Properties wie oben + `body`, `hasAttachments`, `recurrence`)
+
+### `createEvent`
+
+**Input**:
+```json
+{
+  "subject": "Team-Meeting",
+  "body": { "contentType": "html", "content": "<b>Agenda</b>: ..." },
+  "start": { "dateTime": "2026-07-17T14:00:00", "timeZone": "Europe/Berlin" },
+  "end":   { "dateTime": "2026-07-17T15:00:00", "timeZone": "Europe/Berlin" },
+  "isAllDay": false,
+  "location": "Konferenzraum 3",
+  "attendees": [
+    { "email": "alice@firma.de", "name": "Alice", "type": "required" },
+    { "email": "bob@firma.de",   "name": "Bob",   "type": "optional" }
+  ],
+  "reminderMinutesBeforeStart": 15,
+  "categories": ["Team"],
+  "showAs": "busy",
+  "importance": "normal",
+  "sensitivity": "normal",
+  "sendInvitations": true
+}
+```
+
+**Output**: `{ "id": "EntryID-..." }` (gesendete Termineinladung an alle Attendees, wenn `sendInvitations=true`)
+
+### `updateEvent` (PATCH)
+
+**Input**: `id` + patchbare Felder. Mit `sendUpdate=true` werden Attendees benachrichtigt. `forceUpdateToAllAttendees` setzt das MAPI-Flag für „Update an alle erzwingen" (Outlook-Standard: nur Delta).
+
+### `deleteEvent`
+
+**Input**: `id`, `sendCancellation` (bool, default true)
+
+### `respondToEvent` (Accept / Tentative / Decline)
+
+**Input**: `id`, `response` (`accepted|tentativelyAccepted|declined`), `comment` (optional, wird in die Antwort-Mail an den Organizer übernommen)
+**Output**: `{ "ok": true }`
+Implementierung: `MeetingItem.Respond(OlResponseStatus, true, true)` (letzter Parameter = keine Mail an Organizer wenn false; wir wollen true → Antwort an Organizer).
+
+### `findMeetingTimes` (free/busy, Self only in v1)
+
+**Input**:
+- `durationMinutes` (int)
+- `timeWindow`: { `start`: DateTimeTimeZone, `end`: DateTimeTimeZone } (required)
+- `maxCandidates` (int, default 10)
+
+**Output**:
+```json
+{
+  "value": [
+    { "start": "...", "end": "...", "confidence": 100 }
+  ]
+}
+```
+Implementierung: iteriere `Items.Find` über den Self-Calendar im Zeitfenster, berechne Lücken >= `durationMinutes`. v1: Self only. v1.1: optional auch über shared/delegated Kalender (via `Recipient.FreeBusy`).
+
+## Mapping: Microsoft Graph → OutlookMcpServer
+
+| Graph Endpoint | MCP-Tool | Interop-Calls |
+|---|---|---|
+| `GET /me/mailFolders` | `listMailFolders` | `Namespace.Folders` traversal |
+| `GET /me/mailFolders/{id}` | `getMailFolder` | `Namespace.GetFolderFromID` |
+| `GET /me/mailFolders/{id}/messages` | `listMails` | `Folder.Items.Restrict` + Sort |
+| `GET /me/messages/{id}` | `getMail` | `Namespace.GetItemFromID` |
+| `GET /me/messages/{id}/attachments` | `listAttachments` | `MailItem.Attachments` |
+| `POST /me/sendMail` | `sendMail` | `Application.CreateItem(olMailItem)` → `.Send()` |
+| `POST /me/messages` (draft) | `createDraft` | `Application.CreateItem(olMailItem)` → `.Save()` |
+| `PATCH /me/messages/{id}` | `updateMail` | `MailItem.PropertyAccessor` + speichern |
+| `POST /me/messages/{id}/move` | `moveMail` | `MailItem.Move(destFolder)` |
+| `DELETE /me/messages/{id}` | `deleteMail` | `MailItem.Delete()` |
+| `GET /me/events` | `listEvents` | `Calendar.Items.Find("[Start] >= ...")` + Restrict |
+| `GET /me/events/{id}` | `getEvent` | `Namespace.GetItemFromID` |
+| `POST /me/events` | `createEvent` | `Calendar.Items.Add(olAppointmentItem)` → `.Send()` |
+| `PATCH /me/events/{id}` | `updateEvent` | `AppointmentItem` mutieren → `.Save()` / `.Send()` |
+| `DELETE /me/events/{id}` | `deleteEvent` | `AppointmentItem.Delete()` |
+| `POST /me/events/{id}/accept` | `respondToEvent` (accepted) | `MeetingItem.Respond(olResponseAccept, ...)` |
+
+## Fehler-Schema (einheitlich für alle Tools)
+
+Bei Fehlern gibt das Tool ein JSON-Objekt mit `isError=true` zurück (MCP-Standard) und folgendem Body:
+
+```json
+{
+  "error": {
+    "code": "FolderNotFound",
+    "message": "Folder 'InboxX' not found",
+    "details": null
+  }
+}
+```
+
+### Fehler-Codes
+
+| Code | Bedeutung | Retry? |
+|---|---|---|
+| `FolderNotFound` | `mailFolder` ID existiert nicht | nein |
+| `MailNotFound` | `message` ID existiert nicht | nein |
+| `EventNotFound` | `event` ID existiert nicht | nein |
+| `CalendarNotFound` | `calendar` ID existiert nicht | nein |
+| `AttachmentNotFound` | `attachment` ID existiert nicht | nein |
+| `InvalidInput` | Input-Validierung fehlgeschlagen (fehlendes Feld, ungültiges Format) | nein (nach Korrektur) |
+| `OutlookNotRunning` | Outlook-Prozess nicht verfügbar + `AutoStartOutlook=false` | ja (nach Start) |
+| `OutlookBusy` | COM-Call wegen „Another operation in progress" abgewiesen | ja (mit Backoff) |
+| `PermissionDenied` | COM-Security-Block (z. B. Anti-Virus blockiert In-Process-COM) | nein |
+| `AttachmentTooLarge` | > `MaxAttachmentBytes` | nein (nach Verkleinern) |
+| `SendDisabled` | `AllowSend=false` in Config | nein |
+| `DeleteDisabled` | `AllowDelete=false` in Config | nein |
+| `InternalError` | COM-Exception nicht klassifiziert | ja (mit Backoff) |
+
+## Pagination-Konvention
+
+Listen-Tools liefern `value: [...]` + `nextSkip: <int> | null`. Client setzt `skip = nextSkip` für nächste Seite. `nextSkip = null` (oder weggelassen) signalisiert „letzte Seite erreicht".
+
+## Time-Zone-Handling
+
+- Input: `dateTime` als ISO-8601 (lokal ohne Offset) + `timeZone` als IANA-Name (z. B. `"Europe/Berlin"`) ODER `dateTime` als UTC mit `Z`-Suffix
+- Intern: Outlook speichert Termine in zwei Formen — lokal (für Anzeige in Outlook) und UTC (für Vergleiche). `AppointmentItem.Start`/`End` ist die lokale Variante; `.StartUTC`/`.EndUTC` ist UTC.
+- Mapping: `DateTimeTimeZone { dateTime, timeZone }` → COM-`Start`/`End` mit passender `StartTimeZone`/`EndTimeZone`-Property.
+- Output: für Termine aus Outlook → lokale `dateTime` + `timeZone` (aus `StartTimeZone.Name`); UTC-Variante als `originalStartUtc` in `getEvent` (für Vergleiche).

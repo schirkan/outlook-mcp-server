@@ -57,9 +57,10 @@ coverage.*.info
 TestResult*.xml
 TestResult*.json
 
-# Publish profiles
-**/[Pp]ublishProfiles/
-*.pubxml
+# Publish profiles (machine-specific overrides ignored; shared .pubxml committed)
+**/[Pp]ublishProfiles/*.pubxml.user
+**/[Pp]ublishProfiles/*.publishproj
+**/[Pp]ublishProfiles/*.publishsettings
 *.pubxml.user
 *.publishproj
 *.publishsettings

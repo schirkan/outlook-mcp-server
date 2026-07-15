@@ -521,37 +521,163 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         }, nameof(ListMailsAsync));
     }
 
-    public Task<MailMessage> GetMailAsync(
+    public async Task<MailMessage> GetMailAsync(
         string id,
         bool includeBody = true,
         CancellationToken cancellationToken = default)
     {
-        throw new NotImplementedException("GetMailAsync - wird in Karte 3.5 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            dynamic mail = GetMapiNamespace().GetItemFromID(id, Type.Missing);
+            try
+            {
+                return MapMailItem(mail, includeBody);
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(mail);
+            }
+        }, nameof(GetMailAsync));
     }
 
-    public Task<IReadOnlyList<InternetMessageHeader>> GetMailHeadersAsync(
+    public async Task<IReadOnlyList<InternetMessageHeader>> GetMailHeadersAsync(
         string id,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x007D001F")
-        return Task.FromResult<IReadOnlyList<InternetMessageHeader>>(Array.Empty<InternetMessageHeader>());
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            var headers = new List<InternetMessageHeader>();
+            dynamic mail = GetMapiNamespace().GetItemFromID(id, Type.Missing);
+            try
+            {
+                string raw = (string)mail.PropertyAccessor.GetProperty(
+                    "http://schemas.microsoft.com/mapi/proptag/0x007D001F");
+                foreach (var rawLine in raw.Split('\n'))
+                {
+                    var line = rawLine.TrimEnd('\r').Trim();
+                    if (string.IsNullOrEmpty(line)) continue;
+                    int idx = line.IndexOf(':');
+                    if (idx <= 0) continue;
+                    var name = line.Substring(0, idx).Trim();
+                    var value = line.Substring(idx + 1).Trim();
+                    if (name.Length == 0) continue;
+                    headers.Add(new InternetMessageHeader { Name = name, Value = value });
+                }
+            }
+            catch (COMException ex) when (ex.HResult == unchecked((int)0x80040401))
+            {
+                // MAPI_E_NOT_FOUND: Property nicht vorhanden -> leere Liste (manche Mails haben keine Internet-Header)
+                _logger.LogInformation("Mail {Id} hat keine Internet-Header (PropertyAccess nicht vorhanden)", id);
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(mail);
+            }
+            return (IReadOnlyList<InternetMessageHeader>)headers;
+        }, nameof(GetMailHeadersAsync));
     }
 
-    public Task<IReadOnlyList<AttachmentSummary>> ListAttachmentsAsync(
+    public async Task<IReadOnlyList<AttachmentSummary>> ListAttachmentsAsync(
         string mailId,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5
-        return Task.FromResult<IReadOnlyList<AttachmentSummary>>(Array.Empty<AttachmentSummary>());
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            var summaries = new List<AttachmentSummary>();
+            dynamic mail = GetMapiNamespace().GetItemFromID(mailId, Type.Missing);
+            try
+            {
+                foreach (var attachment in mail.Attachments)
+                {
+                    try
+                    {
+                        // Inline-Detection: Outlook gibt Position 0 fuer
+                        // regular Attachments, >0 fuer inline (HTML-Body-embedded).
+                        var position = 0;
+                        try { position = (int)attachment.Position; } catch { }
+                        summaries.Add(new AttachmentSummary
+                        {
+                            Id = (string)attachment.EntryID,
+                            Name = (string)attachment.DisplayName ?? string.Empty,
+                            ContentType = TryGetString(attachment, "ContentType") ?? "application/octet-stream",
+                            Size = (long)(int)attachment.Size,
+                            IsInline = position > 0,
+                        });
+                    }
+                    finally
+                    {
+                        Marshal.ReleaseComObject(attachment);
+                    }
+                }
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(mail);
+            }
+            return (IReadOnlyList<AttachmentSummary>)summaries;
+        }, nameof(ListAttachmentsAsync));
     }
 
-    public Task<AttachmentData> GetAttachmentAsync(
+    public async Task<AttachmentData> GetAttachmentAsync(
         string mailId,
         string attachmentId,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: SaveAsFile + ReadAllBytes + Base64
-        throw new NotImplementedException("GetAttachmentAsync - wird in Karte 3.5 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            var tempPath = Path.Combine(Path.GetTempPath(), $"outlook-mcp-{Guid.NewGuid():N}.bin");
+            try
+            {
+                dynamic mail = GetMapiNamespace().GetItemFromID(mailId, Type.Missing);
+                try
+                {
+                    AttachmentData? result = null;
+                    foreach (var attachment in mail.Attachments)
+                    {
+                        try
+                        {
+                            if ((string)attachment.EntryID == attachmentId)
+                            {
+                                attachment.SaveAsFile(tempPath);
+                                var bytes = File.ReadAllBytes(tempPath);
+                                result = new AttachmentData
+                                {
+                                    Id = (string)attachment.EntryID,
+                                    Name = (string)attachment.DisplayName ?? "attachment",
+                                    ContentType = TryGetString(attachment, "ContentType") ?? "application/octet-stream",
+                                    Size = (long)(int)attachment.Size,
+                                    ContentBase64 = Convert.ToBase64String(bytes),
+                                };
+                                break;
+                            }
+                        }
+                        finally
+                        {
+                            Marshal.ReleaseComObject(attachment);
+                        }
+                    }
+                    if (result is null)
+                    {
+                        throw new OutlookServiceException(
+                            ErrorCode.AttachmentNotFound,
+                            $"Attachment mit EntryID '{attachmentId}' nicht gefunden in Mail '{mailId}'");
+                    }
+                    return result;
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(mail);
+                }
+            }
+            finally
+            {
+                if (File.Exists(tempPath)) File.Delete(tempPath);
+            }
+        }, nameof(GetAttachmentAsync));
     }
 
     public async Task<PagedResult<MailMessage>> SearchMailsAsync(

@@ -13,6 +13,7 @@ Einen **MCP-Server** (`OutlookMcpServer`), der als lokaler Prozess auf Windows l
 - **Kalender lesen** (Kalender auflisten, Termine abfragen, freie Zeitfenster — Self)
 - **Kalender schreiben** (Termin erstellen, aktualisieren, löschen, Teilnehmer einladen, auf Einladung antworten)
 - **Auf aktuell geöffnete / selektierte Outlook-Elemente zugreifen** (Active-Inspector + Active-Explorer-Selection; COM-only, kein Graph-Equivalent)
+- **Zentrales Adressbuch (Exchange GAL) zum Auflösen von Namen in SMTP-Adressen** (eine Methode `resolveName`, kein vollständiges Adressbuch-CRUD — nur Lesen)
 
 ## Was wir NICHT bauen (v1)
 

@@ -154,6 +154,39 @@ Architektur- und Designentscheidungen mit Datum + Begründung. Wird iterativ erw
 
 ---
 
+## 2026-07-15 — resolveName als v1 (nur EINE Methode, Adressbuch-Auflösung)
+
+**Status**: accepted
+
+**Kontext**: Martins Rückfrage "Gibt es im zentralen Adressbuch eine Methode zum Auflösen von Namen/Mailadressen?". Microsoft Graph kennt dafür `/users?$search` und `/me/people`, aber Cloud-only und braucht das ganze Tenant-Setup. COM-Interop bietet `Application.Session.GetGlobalAddressList()` + `AddressEntry.GetExchangeUser()` rein lokal ohne Cloud-Anbindung.
+
+**Entscheidung**:
+- **Genau EINE Methode**: `resolveName(query, top=10)` — Martin hat explizit "nur eine Methode" gesagt
+- Implementation in **Karte 3.5 als Phase P7** (Ergänzung der laufenden Karte; nach P3b-P3h)
+- v1-Scope: nur Lesen (kein CRUD, keine Adressbuch-Verwaltung)
+- Auch **keine** `listAddressBooks()`-Variante, **kein** `showSelectNamesDialog`
+
+**Alternativen** (verworfen):
+- Vollständiges Adressbuch-CRUD (createAddressEntry, updateAddressEntry, deleteAddressEntry): zu groß für v1, gegen YAGNI
+- `listAddressBooks()` als Multi-Buch-Browser: Martin hat explizit nur EIN Tool gewünscht, kein Drop-Down-Bedarf
+- `showSelectNamesDialog` (Outlook UI-Dialog): UI-getrieben, MCP-Clients (Claude Desktop, Cline) können das nicht darstellen
+- Eigene separate Karte nach Karte 8 (README): verspätet, weil Martin "a) In v1 rein" gewählt hat
+
+**Konsequenzen**:
+- +1 MCP-Tool: `resolve_name` (snake_case, in neuer Klasse `Tools/ResolveNameTool.cs`, via WithToolsFromAssembly registriert)
+- +1 DTO: `ResolvedRecipient` (siehe specs/API-DESIGN.md `resolveName`-Section)
+- +1 Domain-Enum: `DirectoryEntryType` (`User | Group | Room | Other`)
+- +1 IOutlookService + IInteropOutlookAdapter Methode: `ResolveNameAsync(query, top, ct)`
+- `OutlookService.ResolveNameAsync`: Validation (query-MinLength 1, top [1, 50]) + Passthrough
+- `OutlookInteropAdapter.ResolveNameAsync`: echte COM-Impl mit `GetGlobalAddressList` + `AddressEntries.GetFirst/GetNext` + `GetExchangeUser` + `GetExchangeDistributionList` für Type-Entscheidung
+- `FakeOutlookService + FakeInteropAdapter`: Real-Impl mit Seed-Buildern (`SeedResolved(name, smtp, type, ...)`)
+- Unit-Tests: Validation (leerer query, top außerhalb), Happy-Path mit Seed, Group/Room-Typ-Erkennung
+
+**Risiken**:
+- COM-Calls auf `Session` blockieren bei Exchange-Sync-Verzögerungen — `SemaphoreSlim`-Schutz bereits im Adapter-Konstruktor (`_comLock`)
+- LDAP/GAL kann je nach Tenant sehr groß sein (1000+ User) — harter `top`-Cap
+- Verteilerlisten-Members werden NICHT rekursiv aufgelöst (Phase nach 7, nicht v1)
+
 ## 2026-07-15 — Out of Scope v1 (zur Klarstellung)
 
 - **Kontakte / Aufgaben / Notizen**: andere Objekt-Hierarchie in MAPI, separates Design; erst nach Stabilisierung der Mail+Calendar-Pfade

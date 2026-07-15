@@ -128,6 +128,30 @@ Architektur- und Designentscheidungen mit Datum + Begründung. Wird iterativ erw
 - Contributions unter Apache-2.0 (kein explizites CLA erforderlich)
 - Kompatibel mit modelcontextprotocol/csharp-sdk (Apache-2.0) und allen anderen Apache-2.0-Komponenten
 
+> **Korrektur 2026-07-15 (zweiter Eintrag unten):** Lizenz wurde auf **MIT** umgestellt — Martins urspruengliche Frage war „Geht auch MIT?", nicht „leg irgendeine Lizenz fest".
+
+---
+
+## 2026-07-15 — Lizenz-Korrektur: Apache-2.0 → MIT
+
+**Status**: accepted
+
+**Kontext**: Martins Rueckfrage „Geht auch mit Lizenz?" habe ich zunaechst als „ja, Apache-2.0 festlegen" interpretiert und einen Apache-2.0-Commit (82e17ad) gepusht. Martin hat kurz darauf korrigiert: die Frage war „Geht auch die MIT-Lizenz?" — er wollte von Anfang an MIT.
+
+**Entscheidung**: Wechsel von Apache-2.0 zu **MIT License**. Apache-2.0-Commit (82e17ad) bleibt in der History (kein Force-Push auf public Repo), LICENSE-Datei wird durch MIT-Standardtext ueberschrieben.
+
+**Alternativen** (verworfen):
+- Apache-2.0 weiterfuehren: ignoriert Martins Wunsch
+- Force-Push + Reset auf vor-Apache-Commit: sauberere History, aber Force-Push auf public Repo heikel
+
+**Konsequenzen**:
+- LICENSE-Datei: MIT-Standardtext + Copyright 2026 Martin
+- README zeigt weiterhin auf LICENSE (jetzt MIT-Inhalt)
+- Contributions unter MIT (sehr permissiv, kein expliziter Patent-Schutz)
+- Inkompatibilitaet mit Apache-2.0-Projekten bzgl. Patent-Schutz: hier kein Issue, da keine Apache-2.0-Deps mit Patent-Klausel direkt genutzt werden (`modelcontextprotocol/csharp-sdk` waere sonst ein Diskussionspunkt — Martin hat sich bewusst fuer MIT entschieden)
+
+**Lesson**: Bei Rueckfragen lieber 30s nachfragen statt interpretieren. Pattern wiederholt sich (vgl. Lessons „nie ohne Empirie behaupten" und „AI-Recall-Browser-Reader-Bug"): ich neige dazu, schnelle Annahmen zu treffen, wenn der User eine offene Frage stellt. Kuenftig: bei mehrdeutigen Fragen explizit nachfragen, statt aus dem Kontext zu extrapolieren.
+
 ---
 
 ## 2026-07-15 — Out of Scope v1 (zur Klarstellung)

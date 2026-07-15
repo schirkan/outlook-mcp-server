@@ -67,10 +67,19 @@ Vision & Scope: siehe [`specs/VISION.md`](specs/VISION.md).
 - [x] GitHub-Repo eingerichtet (`schirkan/outlook-mcp-server`, public)
 - [x] `.gitignore` angelegt
 - [x] Initial `PROJECT.md` + `README.md`
-- [ ] Workboard eingerichtet
-- [ ] Research abgeschlossen (Graph API Mail+Calendar, Interop Mail+Calendar, MCP C# SDK)
-- [ ] Specs geschrieben (VISION, ARCHITECTURE, API-DESIGN)
-- [ ] Implementation gestartet (.NET 8 Projekt, MCP SDK Integration, Interop-Wrapper)
+- [x] Workboard eingerichtet (Board-ID `outlook-mcp-server`, 10 Karten)
+- [x] Research abgeschlossen (Graph API Mail+Calendar, Interop Mail+Calendar, MCP C# SDK)
+- [x] Specs geschrieben (`specs/VISION.md`, `specs/ARCHITECTURE.md`, `specs/API-DESIGN.md`)
+- [x] Solution-Scaffold (.NET 8 + MCP SDK + Outlook Interop, `OutlookMcpServer.sln`)
+- [x] Domain-Schicht (DTOs, `IOutlookService`, `OutlookService` mit Validierung)
+- [x] Interop-Adapter Grundgerüst (COM-Boundary Mail+Calendar, `EnumMappings`, 24 Stubs)
+- [x] Konfiguration + DI + Transport (stdio, `appsettings.json`)
+- [x] MCP-Tools (23 Tools in `MailTools` + `CalendarTools`)
+- [x] Unit-Tests xUnit (35/35 grün, `OutlookMcpServer.Domain.Tests`)
+- [/] **Echte COM-Interop-Impl** (Karte 3.5) — Phasen 1, 2, 3a, 3b, 3c + Docs P7 (`resolveName`) abgeschlossen; ausstehend: Mail-Send, Mail-Move/Copy/Update, Calendar (Appointment-Lookup/Modify), Attendees, ActiveSelection-Tools + Tests
+- [ ] Integration-Tests mit Outlook-Profil (Karte 7)
+- [ ] README erweitern (Build, Konfiguration, Verwendung)
+- [ ] Beispiel-Config + MCP-Client-Setup (Claude Desktop, Cline)
 
 ## Git
 
@@ -83,8 +92,15 @@ Vision & Scope: siehe [`specs/VISION.md`](specs/VISION.md).
 
 ## Workboard
 
-Wird im Anschluss an dieses Initial-Setup eingerichtet.
-Board-ID: `outlook-mcp-server`.
+- **Board-ID:** `outlook-mcp-server`
+- **Stats:** 10 Karten total · 6 done · 1 running · 3 backlog
+- **Laufende Karte:**
+  - `f78b75ed-6f77-439c-abd2-7b03a1d9f371` — Impl: Echte COM-Interop (24 Methoden + Active-Selection) (high)
+- **Backlog:**
+  - `022e0b4e-f07a-499a-904d-4c4a49443871` — Tests: Integration (Outlook-Profil, xUnit, COM-Adapter)
+  - `737dbaa1-f169-4094-af81-a6204ece9052` — Doku: README erweitern (Build, Konfiguration, Verwendung)
+  - `d8753677-91bc-4181-9e39-4c5139d12990` — Doku: Beispiel-Config + MCP-Client-Setup (Claude Desktop, Cline)
+- **Done:** Solution-Scaffold · Domain-Schicht · Interop-Adapter Grundgerüst · Konfiguration + Transport · MCP-Tools · Unit-Tests (35/35 grün)
 
 ## Project Files
 

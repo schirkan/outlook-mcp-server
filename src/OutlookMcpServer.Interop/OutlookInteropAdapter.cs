@@ -1147,23 +1147,120 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
 
     // ===== Calendar: Kalender =====
 
-    public Task<IReadOnlyList<Calendar>> ListCalendarsAsync(
+    public async Task<IReadOnlyList<Calendar>> ListCalendarsAsync(
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: Namespace.Folders (Loop) + .Folders["Kalender"]?
-        return Task.FromResult<IReadOnlyList<Calendar>>(Array.Empty<Calendar>());
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            var result = new List<Calendar>();
+            dynamic session = GetMapiNamespace();
+            try
+            {
+                // Default-Calendar (typischerweise vom Default-Store)
+                string? defaultCalendarEntryId = null;
+                try
+                {
+                    dynamic defaultCal = session.GetDefaultFolder(9 /* OlDefaultFolders.olFolderCalendar */);
+                    try { defaultCalendarEntryId = (string)defaultCal.EntryID; } catch { }
+                    Marshal.ReleaseComObject(defaultCal);
+                }
+                catch { /* kein Default-Calendar vorhanden */ }
+
+                // Alle Stores durchlaufen (Exchange, PST/OST, etc.)
+                foreach (var store in session.Stores)
+                {
+                    dynamic? storeCal = null;
+                    try
+                    {
+                        try
+                        {
+                            storeCal = store.GetDefaultFolder(9);
+                        }
+                        catch
+                        {
+                            // Store hat keinen Kalender (z. B. reiner Mail-Store)
+                            continue;
+                        }
+
+                        var isDefault = false;
+                        try { isDefault = (string)storeCal.EntryID == defaultCalendarEntryId; } catch { }
+                        var entryId = (string)storeCal.EntryID;
+                        if (!result.Any(c => c.Id == entryId))
+                        {
+                            result.Add(MapCalendar(storeCal, isDefault));
+                        }
+
+                        // Unter-Kalender (Custom-Calendars im selben Store)
+                        foreach (var sub in storeCal.Folders)
+                        {
+                            try
+                            {
+                                int defaultItemType = 0;
+                                try { defaultItemType = (int)sub.DefaultItemType; } catch { }
+                                if (defaultItemType == 1 /* OlItemType.olAppointmentItem */)
+                                {
+                                    var subEntryId = (string)sub.EntryID;
+                                    if (!result.Any(c => c.Id == subEntryId))
+                                    {
+                                        result.Add(MapCalendar(sub, false));
+                                    }
+                                }
+                            }
+                            finally
+                            {
+                                Marshal.ReleaseComObject(sub);
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        if (storeCal is not null) Marshal.ReleaseComObject(storeCal);
+                        Marshal.ReleaseComObject(store);
+                    }
+                }
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(session);
+            }
+            return (IReadOnlyList<Calendar>)result;
+        }, nameof(ListCalendarsAsync));
     }
 
-    public Task<Calendar> GetCalendarAsync(
+    public async Task<Calendar> GetCalendarAsync(
         string id,
         CancellationToken cancellationToken = default)
     {
-        throw new NotImplementedException("GetCalendarAsync - wird in Karte 3.5 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            dynamic folder = GetMapiNamespace().GetFolderFromID(id, Type.Missing);
+            try
+            {
+                // Pruefen ob es ein Kalender-Ordner ist
+                int defaultItemType = 0;
+                try { defaultItemType = (int)folder.DefaultItemType; } catch { }
+                if (defaultItemType != 1 /* olAppointmentItem */)
+                {
+                    throw new OutlookServiceException(
+                        ErrorCode.CalendarNotFound,
+                        $"Ordner mit EntryID '{id}' ist kein Kalender-Ordner (DefaultItemType={defaultItemType})");
+                }
+                // IsDefaultCalendar-Bestimmung waere Vergleich mit Default-Calendar
+                // - hier nicht noetig, da Aufrufer explizit eine ID angibt
+                return MapCalendar(folder, isDefault: false);
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(folder);
+            }
+        }, nameof(GetCalendarAsync));
     }
 
     // ===== Calendar: Termine =====
 
-    public Task<PagedResult<CalendarEvent>> ListEventsAsync(
+    public async Task<PagedResult<CalendarEvent>> ListEventsAsync(
         string? calendarId,
         DateTimeTimeZone start,
         DateTimeTimeZone end,
@@ -1172,19 +1269,376 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         string? filter = null,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: Calendar.Items.Find("[Start] >= ... AND [End] < ...")
-        return Task.FromResult(new PagedResult<CalendarEvent>
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
         {
-            Value = Array.Empty<CalendarEvent>(),
-            NextSkip = null,
-        });
+            dynamic calendar = calendarId is null
+                ? GetMapiNamespace().GetDefaultFolder(9 /* OlDefaultFolders.olFolderCalendar */)
+                : GetMapiNamespace().GetFolderFromID(calendarId, Type.Missing);
+            try
+            {
+                dynamic items = calendar.Items;
+                try
+                {
+                    // Wichtig: IncludeRecurrences = true expandiert Serien in einzelne Vorkommen.
+                    items.IncludeRecurrences = true;
+
+                    // DASL-Filter (JET-Query-Syntax): Datum im US-Format M/d/yyyy h:mm:ss tt.
+                    var startDt = DateTime.Parse(start.DateTime, System.Globalization.CultureInfo.InvariantCulture);
+                    var endDt = DateTime.Parse(end.DateTime, System.Globalization.CultureInfo.InvariantCulture);
+                    var startStr = startDt.ToString("M/d/yyyy h:mm:ss tt", System.Globalization.CultureInfo.InvariantCulture);
+                    var endStr = endDt.ToString("M/d/yyyy h:mm:ss tt", System.Globalization.CultureInfo.InvariantCulture);
+                    var combined = $"[Start] >= '{startStr}' AND [End] <= '{endStr}'";
+                    if (!string.IsNullOrWhiteSpace(filter))
+                    {
+                        combined = $"({combined}) AND ({filter})";
+                    }
+                    items = items.Restrict(combined);
+                    items.Sort("[Start]");
+
+                    int total = (int)items.Count;
+                    int startIdx = Math.Min(skip, total);
+                    int endIdx = Math.Min(skip + top, total);
+                    var slice = new List<CalendarEvent>(endIdx - startIdx);
+                    for (int i = startIdx; i < endIdx; i++)
+                    {
+                        dynamic item = items.Item(i + 1);
+                        try
+                        {
+                            slice.Add(MapAppointmentItem(item));
+                        }
+                        finally
+                        {
+                            Marshal.ReleaseComObject(item);
+                        }
+                    }
+                    return new PagedResult<CalendarEvent>
+                    {
+                        Value = slice,
+                        NextSkip = endIdx < total ? endIdx : (int?)null,
+                    };
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(items);
+                }
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(calendar);
+            }
+        }, nameof(ListEventsAsync));
     }
 
-    public Task<CalendarEvent> GetEventAsync(
+    public async Task<CalendarEvent> GetEventAsync(
         string id,
         CancellationToken cancellationToken = default)
     {
-        throw new NotImplementedException("GetEventAsync - wird in Karte 3.5 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            dynamic item = GetMapiNamespace().GetItemFromID(id, Type.Missing);
+            try
+            {
+                return MapAppointmentItem(item);
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(item);
+            }
+        }, nameof(GetEventAsync));
+    }
+
+    // ===== Calendar: Mapping-Helpers =====
+
+    /// <summary>
+    /// Mappt ein COM-MAPIFolder (Kalender-Ordner) auf das <see cref="Calendar"/>-DTO.
+    /// Owner wird defensiv mit Fallback null gemappt (PropertyAccess via
+    /// store.PropertyAccessor fuer PR_OWNER_NAME_W haengt vom Store-Typ ab).
+    /// </summary>
+    private static Calendar MapCalendar(dynamic folder, bool isDefault)
+    {
+        var entryId = (string)folder.EntryID;
+        var name = (string)folder.Name;
+        bool canEdit = true;
+        try { canEdit = (int)folder.Permission != 0 /* olPermissionNone */; } catch { }
+        string? owner = null;
+        try
+        {
+            // PR_OWNER_NAME_W (0x3A1F001F als String) via Parent-Store
+            dynamic parentStore = folder.Parent;
+            try
+            {
+                if (parentStore is not null)
+                {
+                    dynamic propAcc = parentStore.PropertyAccessor;
+                    try
+                    {
+                        owner = (string?)propAcc.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x3A1F001F");
+                    }
+                    finally { Marshal.ReleaseComObject(propAcc); }
+                }
+            }
+            finally { Marshal.ReleaseComObject(parentStore); }
+        }
+        catch { /* kein Owner verfuegbar */ }
+
+        return new Calendar
+        {
+            Id = entryId,
+            Name = name,
+            IsDefaultCalendar = isDefault,
+            CanEdit = canEdit,
+            Owner = owner,
+        };
+    }
+
+    /// <summary>
+    /// Mappt ein COM-AppointmentItem auf das <see cref="CalendarEvent"/>-DTO.
+    /// Felder werden defensiv gemappt (Outlook-Werte koennen je nach Item-Typ
+    /// fehlen, z. B. Body bei Terminen ohne Beschreibung, Organizer bei selbst
+    /// angelegten Terminen ohne eingeladene Teilnehmer).
+    /// <para>
+    /// TimeZone-Hinweis: Outlook liefert nur Windows-TimeZone-IDs (z. B.
+    /// "W. Europe Standard Time"), das DTO erwartet aber IANA-Namen (z. B.
+    /// "Europe/Berlin"). Wir geben die Windows-ID unveraendert weiter; eine
+    /// spaetere Phase koennte eine Mapping-Tabelle fuer haeufige Zonen ergaenzen.
+    /// </para>
+    /// </summary>
+    private static CalendarEvent MapAppointmentItem(dynamic item)
+    {
+        var entryId = (string)item.EntryID;
+        string? subject = TryGetString(item, "Subject");
+        string? bodyPreview = TryGetString(item, "BodyPreview");
+
+        // Body (BodyFormat MUSS vor Body/HTMLBody gelesen werden)
+        ItemBody? body = null;
+        try
+        {
+            string bodyText = TryGetString(item, "Body") ?? string.Empty;
+            string bodyHtml = TryGetString(item, "HTMLBody") ?? string.Empty;
+            int fmt = 1;
+            try { fmt = (int)item.BodyFormat; } catch { }
+            if (fmt == 2 && !string.IsNullOrEmpty(bodyHtml))
+            {
+                body = new ItemBody { ContentType = ItemBodyType.Html, Content = bodyHtml };
+            }
+            else if (!string.IsNullOrEmpty(bodyText))
+            {
+                body = new ItemBody { ContentType = ItemBodyType.Text, Content = bodyText };
+            }
+        }
+        catch { }
+
+        // Start/End (Outlook gibt lokale Zeit des Kalenders; tz als Windows-ID)
+        DateTimeTimeZone? startDttz = null;
+        DateTimeTimeZone? endDttz = null;
+        try
+        {
+            var startDt = (DateTime)item.Start;
+            var startTz = TryGetWindowsTimeZoneId(item, "StartTimeZone") ?? "UTC";
+            startDttz = new DateTimeTimeZone
+            {
+                DateTime = startDt.ToString("yyyy-MM-ddTHH:mm:ss"),
+                TimeZone = startTz,
+            };
+        }
+        catch { }
+        try
+        {
+            var endDt = (DateTime)item.End;
+            var endTz = TryGetWindowsTimeZoneId(item, "EndTimeZone") ?? "UTC";
+            endDttz = new DateTimeTimeZone
+            {
+                DateTime = endDt.ToString("yyyy-MM-ddTHH:mm:ss"),
+                TimeZone = endTz,
+            };
+        }
+        catch { }
+
+        bool isAllDay = false;
+        try { isAllDay = (bool)item.AllDayEvent; } catch { }
+
+        // Location
+        Location? location = null;
+        var locations = new List<Location>();
+        try
+        {
+            var locName = TryGetString(item, "Location");
+            if (!string.IsNullOrEmpty(locName))
+            {
+                location = new Location { DisplayName = locName };
+                locations.Add(location);
+            }
+        }
+        catch { }
+
+        // Organizer
+        Organizer? organizer = null;
+        try
+        {
+            dynamic org = item.Organizer;
+            if (org is not null)
+            {
+                try
+                {
+                    var orgName = TryGetString(org, "Name");
+                    var orgAddr = TryGetString(org, "Address");
+                    if (!string.IsNullOrEmpty(orgAddr))
+                    {
+                        organizer = new Organizer
+                        {
+                            EmailAddress = new EmailAddress { Name = orgName, Address = orgAddr },
+                        };
+                    }
+                }
+                finally { Marshal.ReleaseComObject(org); }
+            }
+        }
+        catch { }
+
+        // Attendees
+        var attendees = new List<Attendee>();
+        try
+        {
+            foreach (var att in item.Recipients)
+            {
+                try
+                {
+                    var attName = TryGetString(att, "Name");
+                    var attAddr = TryGetString(att, "Address");
+                    if (string.IsNullOrEmpty(attAddr)) continue;
+
+                    int responseStatus = 0;
+                    try { responseStatus = (int)att.MeetingResponseStatus; } catch { }
+                    int typeRaw = 0;
+                    try { typeRaw = (int)att.Type; } catch { }
+                    // OlRecipientType: 1=olRequired, 2=olOptional, 3=olResource
+                    var attType = typeRaw switch
+                    {
+                        2 => AttendeeType.Optional,
+                        3 => AttendeeType.Resource,
+                        _ => AttendeeType.Required,
+                    };
+
+                    attendees.Add(new Attendee
+                    {
+                        EmailAddress = new EmailAddress { Name = attName, Address = attAddr },
+                        Type = attType,
+                        Status = new ResponseStatus { Response = OlEnumMappings.ToResponse(responseStatus) },
+                    });
+                }
+                finally { Marshal.ReleaseComObject(att); }
+            }
+        }
+        catch { }
+
+        // Importance / Sensitivity / ShowAs
+        var importance = Importance.Normal;
+        try { importance = OlEnumMappings.ToImportance((int)item.Importance); } catch { }
+        var sensitivity = Sensitivity.Normal;
+        try { sensitivity = OlEnumMappings.ToSensitivity((int)item.Sensitivity); } catch { }
+        var showAs = ShowAs.Busy;
+        try { showAs = OlEnumMappings.ToShowAs((int)item.BusyStatus); } catch { }
+
+        // MeetingStatus: 0=olMeeting, 1=olMeetingReceived, 2=olMeetingCanceled, 3=olMeetingReceivedAndCanceled
+        bool isCancelled = false;
+        try { isCancelled = (int)item.MeetingStatus == 2 /* olMeetingCanceled */ || (int)item.MeetingStatus == 3; } catch { }
+
+        bool isReminderOn = false;
+        int reminderMinutes = 0;
+        try { isReminderOn = (bool)item.ReminderSet; } catch { }
+        try { reminderMinutes = (int)item.ReminderMinutesBeforeStart; } catch { }
+
+        // Categories
+        var categories = new List<string>();
+        try
+        {
+            var catStr = TryGetString(item, "Categories") ?? string.Empty;
+            if (!string.IsNullOrEmpty(catStr))
+            {
+                foreach (var c in catStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    categories.Add(c);
+                }
+            }
+        }
+        catch { }
+
+        bool hasAttachments = false;
+        try { hasAttachments = (int)item.Attachments.Count > 0; } catch { }
+
+        string? iCalUId = null;
+        try { iCalUId = TryGetString(item, "GlobalAppointmentID"); } catch { }
+
+        DateTimeOffset? created = null, modified = null;
+        try { created = (DateTimeOffset)item.CreationTime; } catch { }
+        try { modified = (DateTimeOffset)item.LastModificationTime; } catch { }
+
+        string? changeKey = null;
+        try { changeKey = TryGetString(item, "EntryID"); } catch { }
+
+        var type = EventType.SingleInstance;
+        try
+        {
+            if ((bool)item.IsRecurring)
+            {
+                type = EventType.SeriesMaster;
+            }
+        }
+        catch { }
+
+        return new CalendarEvent
+        {
+            Id = entryId,
+            Subject = subject,
+            BodyPreview = bodyPreview,
+            Body = body,
+            Start = startDttz,
+            End = endDttz,
+            IsAllDay = isAllDay,
+            Location = location,
+            Locations = locations,
+            Organizer = organizer,
+            Attendees = attendees,
+            Importance = importance,
+            Sensitivity = sensitivity,
+            ShowAs = showAs,
+            IsCancelled = isCancelled,
+            IsReminderOn = isReminderOn,
+            ReminderMinutesBeforeStart = reminderMinutes,
+            Categories = categories,
+            HasAttachments = hasAttachments,
+            Recurrence = null, // Recurrence-Mapping ist komplex (RecurrencePattern mit Type/Interval/DaysOfWeek/etc.); v1 Phase-3f auf null gesetzt
+            ICalUId = iCalUId,
+            CreatedDateTime = created,
+            LastModifiedDateTime = modified,
+            ChangeKey = changeKey,
+            Type = type,
+        };
+    }
+
+    /// <summary>
+    /// Liest die Windows-TimeZone-ID (z. B. "W. Europe Standard Time") aus einem
+    /// Outlook-TimeZone-Objekt (StartTimeZone/EndTimeZone). Outlook liefert hier
+    /// keinen IANA-Namen; das ist eine bekannte Begrenzung des COM-APIs.
+    /// </summary>
+    private static string? TryGetWindowsTimeZoneId(dynamic item, string propertyName)
+    {
+        try
+        {
+            var tz = item.GetType().GetProperty(propertyName)?.GetValue(item);
+            if (tz is null) return null;
+            try
+            {
+                return (string?)tz.GetType().GetProperty("ID")?.GetValue(tz);
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(tz);
+            }
+        }
+        catch { return null; }
     }
 
     // ===== Calendar: Mutationen =====

@@ -110,16 +110,23 @@ Architektur- und Designentscheidungen mit Datum + Begründung. Wird iterativ erw
 
 ---
 
-## 2026-07-15 — Lizenz: TBD
+## 2026-07-15 — Lizenz: Apache-2.0
 
-**Status**: open
+**Status**: accepted
 
-**Optionen**:
-- **MIT** (permissiv, oft für Open-Source-Tools)
-- **Apache-2.0** (permissiv + Patent-Schutz, gleiche Lizenz wie modelcontextprotocol/csharp-sdk)
-- **BSL / Quelle-zur-Pflicht** (kommerziell restriktiver)
+**Kontext**: Offene Lizenz-Frage aus Initial-Decisions, Martin hat nach Setup-Phase um Festlegung gebeten („Geht auch mit Lizenz?").
 
-Vorschlag: **Apache-2.0** (gleiche Lizenz wie csharp-sdk → konsistent, gute Kompatibilität). Entscheidung in einer Folge-Session vor erstem Pull-Request von außen.
+**Entscheidung**: **Apache License 2.0**. Gleiche Lizenz wie `modelcontextprotocol/csharp-sdk` → konsistent, kompatibel, inkl. explizitem Patent-Schutz.
+
+**Alternativen** (verworfen):
+- **MIT**: permissiver, aber kein expliziter Patent-Schutz
+- **BSL / Quelle-zur-Pflicht**: kommerziell restriktiver, schließt Contributions aus
+
+**Konsequenzen**:
+- `LICENSE`-Datei im Repo mit Apache-2.0-Standardtext + Copyright 2026 Martin
+- README zeigt auf LICENSE
+- Contributions unter Apache-2.0 (kein explizites CLA erforderlich)
+- Kompatibel mit modelcontextprotocol/csharp-sdk (Apache-2.0) und allen anderen Apache-2.0-Komponenten
 
 ---
 

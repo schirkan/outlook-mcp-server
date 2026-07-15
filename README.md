@@ -29,4 +29,4 @@ MCP-Server fuer **klassische Outlook-Installationen** auf Windows. Liest und sch
 
 ## Lizenz
 
-TBD (in Klaerung)
+[Apache License 2.0](LICENSE) — gleiche Lizenz wie [`modelcontextprotocol/csharp-sdk`](https://github.com/modelcontextprotocol/csharp-sdk), inkl. explizitem Patent-Schutz.

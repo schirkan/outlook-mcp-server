@@ -2009,20 +2009,140 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         });
     }
 
-    // ===== Active-Inspector / Selection (TODO Karte 3.5 P3) =====
+    // ===== Active-Inspector / Selection (Phase 3h) =====
 
-    public Task<ActiveItem?> GetActiveItemAsync(CancellationToken cancellationToken = default)
+    public async Task<ActiveItem?> GetActiveItemAsync(CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5 P3: Application.ActiveInspector()?.CurrentItem + Type-Dispatch (MailItem | AppointmentItem -> DTO)
-        throw new NotImplementedException("GetActiveItemAsync - wird in Karte 3.5 P3 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            // null ist valides Resultat: kein Inspector offen, oder v1-out-of-scope
+            // Typ (Tasks/Contacts). Wird via TryGetInspector defensiv abgefangen,
+            // sodass kein OutlookServiceException fuer den Normalfall geworfen wird.
+            dynamic? inspector = null;
+            try
+            {
+                inspector = _outlookApp!.ActiveInspector();
+            }
+            catch (COMException)
+            {
+                return (ActiveItem?)null;
+            }
+            if (inspector is null) return (ActiveItem?)null;
+
+            dynamic? currentItem = null;
+            try { currentItem = inspector.CurrentItem; }
+            catch (COMException)
+            {
+                if (inspector is not null) Marshal.ReleaseComObject(inspector);
+                return (ActiveItem?)null;
+            }
+            if (currentItem is null)
+            {
+                Marshal.ReleaseComObject(inspector);
+                return (ActiveItem?)null;
+            }
+
+            try
+            {
+                // OlObjectClass: 43=olMail, 26=olAppointment, 48=olTask, 40=olContact, ...
+                int objectClass = 0;
+                try { objectClass = (int)currentItem.Class; } catch { }
+                return objectClass switch
+                {
+                    43 /* olMail */ => (ActiveItem?)new ActiveMail { Item = MapMailItem(currentItem, includeBody: true) },
+                    26 /* olAppointment */ => (ActiveItem?)new ActiveEvent { Item = MapAppointmentItem(currentItem) },
+                    _ => null, // Tasks/Contacts/etc. -> v1.1
+                };
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(currentItem);
+                Marshal.ReleaseComObject(inspector);
+            }
+        }, nameof(GetActiveItemAsync));
     }
 
-    public Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
+    public async Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
         SelectionScope scope,
         int top = 50,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5 P3: Application.ActiveExplorer()?.Selection + Scope-Filter
-        throw new NotImplementedException("GetSelectedItemsAsync - wird in Karte 3.5 P3 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            var result = new List<ActiveItem>();
+            // Aktiver Explorer (Mail-/Calendar-Explorer). ActiveExplorer()==null
+            // -> OutlookNotActive (OutlookServiceException durch OutlookServiceException-Wrap).
+            dynamic? explorer = null;
+            try
+            {
+                explorer = _outlookApp!.ActiveExplorer();
+            }
+            catch (COMException ex)
+            {
+                throw new OutlookServiceException(
+                    OlEnumMappings.FromHResult(ex.HResult),
+                    $"ActiveExplorer nicht abrufbar: {ex.Message}",
+                    ex);
+            }
+            if (explorer is null)
+            {
+                throw new OutlookServiceException(
+                    ErrorCode.OutlookNotActive,
+                    "Outlook ActiveExplorer ist null (kein Explorer-Fenster offen).");
+            }
+
+            try
+            {
+                dynamic selection = explorer.Selection;
+                try
+                {
+                    int count = (int)selection.Count;
+                    if (count == 0) return (IReadOnlyList<ActiveItem>)result; // valides Empty-Result
+
+                    int take = Math.Min(count, top);
+                    for (int i = 1; i <= take; i++)
+                    {
+                        dynamic item = selection.Item(i);
+                        try
+                        {
+                            int objectClass = 0;
+                            try { objectClass = (int)item.Class; } catch { continue; }
+
+                            bool include = scope switch
+                            {
+                                SelectionScope.Any => true,
+                                SelectionScope.Mail => objectClass == 43,
+                                SelectionScope.Calendar => objectClass == 26,
+                                _ => false,
+                            };
+                            if (!include) continue;
+
+                            ActiveItem? mapped = objectClass switch
+                            {
+                                43 => new ActiveMail { Item = MapMailItem(item, includeBody: true) },
+                                26 => new ActiveEvent { Item = MapAppointmentItem(item) },
+                                _ => null,
+                            };
+                            if (mapped is not null) result.Add(mapped);
+                        }
+                        finally
+                        {
+                            Marshal.ReleaseComObject(item);
+                        }
+                    }
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(selection);
+                }
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(explorer);
+            }
+            return (IReadOnlyList<ActiveItem>)result;
+        }, nameof(GetSelectedItemsAsync));
     }
 }

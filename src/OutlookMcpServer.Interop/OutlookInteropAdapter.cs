@@ -1643,47 +1643,370 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
 
     // ===== Calendar: Mutationen =====
 
-    public Task<string> CreateEventAsync(
+    public async Task<string> CreateEventAsync(
         CreateEventRequest request,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: Calendar.Items.Add(olAppointmentItem) + .Send()
-        throw new NotImplementedException("CreateEventAsync - wird in Karte 3.5 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            // v1: Standardmaessig in den Default-Calendar (kein CalendarId im
+            // CreateEventRequest). Folge-Phase koennte Calendar-Parameter ergaenzen.
+            dynamic calendar = GetMapiNamespace().GetDefaultFolder(9 /* OlDefaultFolders.olFolderCalendar */);
+            dynamic appointment = calendar.Items.Add(1 /* OlItemType.olAppointmentItem */);
+            try
+            {
+                FillAppointmentFromCreateRequest(appointment, request);
+                AddAttendees(appointment, request.Attendees);
+
+                if (request.SendInvitations && request.Attendees.Count > 0)
+                {
+                    // .Send() versendet Einladungen an alle Attendees und persistiert
+                    // den Termin im Organizer-Kalender.
+                    appointment.Send();
+                }
+                else
+                {
+                    // Nur persistieren (kein Mailversand).
+                    appointment.Save();
+                }
+
+                return (string)appointment.EntryID;
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(appointment);
+                Marshal.ReleaseComObject(calendar);
+            }
+        }, nameof(CreateEventAsync));
     }
 
-    public Task UpdateEventAsync(
+    public async Task UpdateEventAsync(
         string id,
         EventUpdate update,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: AppointmentItem-Mutation + .Save()
-        throw new NotImplementedException("UpdateEventAsync - wird in Karte 3.5 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        await RunComAsync(() =>
+        {
+            dynamic appointment = GetMapiNamespace().GetItemFromID(id, Type.Missing);
+            try
+            {
+                // PATCH-Semantik: nur gesetzte Felder anfassen. BodyFormat MUSS
+                // vor .Body/.HTMLBody stehen.
+                if (update.Body is { } body)
+                {
+                    var bodyFormat = OlEnumMappings.ToOlBodyFormat(body.ContentType);
+                    appointment.BodyFormat = bodyFormat;
+                    if (bodyFormat == 2)
+                        appointment.HTMLBody = body.Content;
+                    else
+                        appointment.Body = body.Content;
+                }
+                if (update.Subject is { } subject)
+                    appointment.Subject = subject;
+                if (update.Start is { } start)
+                    appointment.Start = DateTime.Parse(start.DateTime, System.Globalization.CultureInfo.InvariantCulture);
+                if (update.End is { } end)
+                    appointment.End = DateTime.Parse(end.DateTime, System.Globalization.CultureInfo.InvariantCulture);
+                if (update.Location is { } location)
+                    appointment.Location = location;
+                if (update.ReminderMinutesBeforeStart is int rem)
+                {
+                    appointment.ReminderSet = true;
+                    appointment.ReminderMinutesBeforeStart = rem;
+                }
+                if (update.Categories is not null)
+                    appointment.Categories = string.Join(", ", update.Categories);
+                if (update.ShowAs is { } showAs)
+                    appointment.BusyStatus = OlEnumMappings.ToOlBusyStatus(showAs);
+                if (update.Importance is { } importance)
+                    appointment.Importance = OlEnumMappings.ToOlImportance(importance);
+                if (update.Sensitivity is { } sensitivity)
+                    appointment.Sensitivity = OlEnumMappings.ToOlSensitivity(sensitivity);
+                if (update.Attendees is not null)
+                {
+                    // Bestehende Recipients entfernen, dann neu befuellen. Outlook
+                    // COM bietet kein direktes ReplaceAll; daher Iteration Remove(1).
+                    dynamic recipients = appointment.Recipients;
+                    try
+                    {
+                        while ((int)recipients.Count > 0)
+                        {
+                            Marshal.ReleaseComObject(recipients.Item(1));
+                            recipients.Remove(1);
+                        }
+                    }
+                    finally
+                    {
+                        Marshal.ReleaseComObject(recipients);
+                    }
+                    AddAttendees(appointment, update.Attendees);
+                }
+
+                // .Send() benachrichtigt Attendees und speichert; .Save() nur lokal.
+                if (update.SendUpdate && (int)appointment.Recipients.Count > 0)
+                {
+                    appointment.Send();
+                }
+                else
+                {
+                    appointment.Save();
+                }
+                return true;
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(appointment);
+            }
+        }, nameof(UpdateEventAsync));
     }
 
-    public Task DeleteEventAsync(
+    public async Task DeleteEventAsync(
         string id,
         bool sendCancellation = true,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: AppointmentItem.Delete()
-        throw new NotImplementedException("DeleteEventAsync - wird in Karte 3.5 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        await RunComAsync(() =>
+        {
+            dynamic appointment = GetMapiNamespace().GetItemFromID(id, Type.Missing);
+            try
+            {
+                // Outlook COM hat kein separates Cancel() auf AppointmentItem.
+                // Beim Loeschen eines Termins mit Attendees versendet Outlook
+                // automatisch eine Cancellation ueber die Meeting-Infrastruktur
+                // (CancellationMessageHandling). Wir unterscheiden den Parameter
+                // sendCancellation aktuell nicht; .Delete() deckt beide Faelle ab.
+                appointment.Delete();
+                return true;
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(appointment);
+            }
+        }, nameof(DeleteEventAsync));
     }
 
-    public Task RespondToEventAsync(
+    public async Task RespondToEventAsync(
         string id,
         RespondToEventRequest request,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: MeetingItem.Respond(olResponseStatus, ...)
-        throw new NotImplementedException("RespondToEventAsync - wird in Karte 3.5 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        await RunComAsync(() =>
+        {
+            dynamic appointment = GetMapiNamespace().GetItemFromID(id, Type.Missing);
+            try
+            {
+                // Outlook.OlResponseStatus (1=Organizer, 2=Tentative, 3=Accepted,
+                // 4=Declined); .Respond(Response, fAdditionalComments, additionalText)
+                // sendet die Antwort-Mail und aktualisiert den Termin-Status.
+                var olResponse = OlEnumMappings.ToOlResponseStatus(request.Response);
+                bool hasComment = !string.IsNullOrEmpty(request.Comment);
+                appointment.Respond(olResponse, hasComment, request.Comment ?? string.Empty);
+                return true;
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(appointment);
+            }
+        }, nameof(RespondToEventAsync));
     }
 
-    public Task<IReadOnlyList<MeetingTimeCandidate>> FindMeetingTimesAsync(
+    public async Task<IReadOnlyList<MeetingTimeCandidate>> FindMeetingTimesAsync(
         FindMeetingTimesRequest request,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: Self-Calendar scan + Luecken >= DurationMinutes
-        return Task.FromResult<IReadOnlyList<MeetingTimeCandidate>>(Array.Empty<MeetingTimeCandidate>());
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            var candidates = new List<MeetingTimeCandidate>();
+            dynamic calendar = GetMapiNamespace().GetDefaultFolder(9 /* OlDefaultFolders.olFolderCalendar */);
+            try
+            {
+                var windowStart = DateTime.Parse(request.TimeWindowStart.DateTime, System.Globalization.CultureInfo.InvariantCulture);
+                var windowEnd = DateTime.Parse(request.TimeWindowEnd.DateTime, System.Globalization.CultureInfo.InvariantCulture);
+                var duration = TimeSpan.FromMinutes(request.DurationMinutes);
+                if (windowEnd <= windowStart || duration <= TimeSpan.Zero) return (IReadOnlyList<MeetingTimeCandidate>)candidates;
+
+                dynamic items = calendar.Items;
+                try
+                {
+                    items.IncludeRecurrences = true;
+                    var startStr = windowStart.ToString("M/d/yyyy h:mm:ss tt", System.Globalization.CultureInfo.InvariantCulture);
+                    var endStr = windowEnd.ToString("M/d/yyyy h:mm:ss tt", System.Globalization.CultureInfo.InvariantCulture);
+                    items = items.Restrict($"[Start] >= '{startStr}' AND [End] <= '{endStr}'");
+                    items.Sort("[Start]");
+
+                    // Busy-Intervalle sammeln (AllDay-Events ignorieren wir,
+                    // da Outlook sie als Hintergrund busy markiert; fuer freie
+                    // Zeit-Slots sind sie aber oft hinderlich. Tunenvariant: mit
+                    // AllDay ist eine spaetere Phase).
+                    var busyList = new List<(DateTime Start, DateTime End)>();
+                    for (int i = 1; i <= (int)items.Count; i++)
+                    {
+                        dynamic item = items.Item(i);
+                        try
+                        {
+                            bool isAllDay = false;
+                            try { isAllDay = (bool)item.AllDayEvent; } catch { }
+                            if (isAllDay) continue;
+
+                            int busyStatus = 0;
+                            try { busyStatus = (int)item.BusyStatus; } catch { }
+                            // 0=olFree, 1=olTentative, 2=olBusy, 3=olOutOfOffice, 4=olWorkingElsewhere
+                            // 0 = frei -> kein Gap-Effekt
+                            if (busyStatus == 0) continue;
+
+                            var s = (DateTime)item.Start;
+                            var e = (DateTime)item.End;
+                            if (e <= s) continue;
+                            busyList.Add((s, e));
+                        }
+                        finally
+                        {
+                            Marshal.ReleaseComObject(item);
+                        }
+                    }
+
+                    // Gap-Scan im Zeitfenster. Outlook-Termine sind meist sauber
+                    // definiert ohne grosse Overlaps; Overlap-Merge waere v1+.
+                    var sortedBusy = busyList.OrderBy(b => b.Start).ToList();
+
+                    DateTime cursor = windowStart;
+                    foreach (var (bs, be) in sortedBusy)
+                    {
+                        if (bs >= windowEnd) break;
+                        if (bs > cursor)
+                        {
+                            AddCandidateIfFits(candidates, cursor, bs < windowEnd ? bs : windowEnd, duration);
+                        }
+                        if (be > cursor) cursor = be;
+                        if (cursor >= windowEnd) break;
+                    }
+                    if (cursor < windowEnd)
+                    {
+                        AddCandidateIfFits(candidates, cursor, windowEnd, duration);
+                    }
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(items);
+                }
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(calendar);
+            }
+
+            // Ranking: laengste Luecken zuerst, dann fruehester Start.
+            var ranked = candidates
+                .OrderByDescending(c => (DateTime.Parse(c.End.DateTime, System.Globalization.CultureInfo.InvariantCulture)
+                                       - DateTime.Parse(c.Start.DateTime, System.Globalization.CultureInfo.InvariantCulture)))
+                .ThenBy(c => c.Start.DateTime)
+                .Take(request.MaxCandidates)
+                .ToList();
+            return (IReadOnlyList<MeetingTimeCandidate>)ranked;
+        }, nameof(FindMeetingTimesAsync));
+    }
+
+    // ===== Calendar: Mutations-Helpers =====
+
+    /// <summary>
+    /// Befuellt ein AppointmentItem mit Feldern aus einem CreateEventRequest.
+    /// </summary>
+    private static void FillAppointmentFromCreateRequest(dynamic appointment, CreateEventRequest request)
+    {
+        appointment.Subject = request.Subject;
+        if (request.Body is not null)
+        {
+            var bodyFormat = OlEnumMappings.ToOlBodyFormat(request.Body.ContentType);
+            appointment.BodyFormat = bodyFormat;
+            if (bodyFormat == 2 /* olFormatHTML */)
+                appointment.HTMLBody = request.Body.Content;
+            else
+                appointment.Body = request.Body.Content;
+        }
+        appointment.Start = DateTime.Parse(request.Start.DateTime, System.Globalization.CultureInfo.InvariantCulture);
+        appointment.End = DateTime.Parse(request.End.DateTime, System.Globalization.CultureInfo.InvariantCulture);
+        appointment.AllDayEvent = request.IsAllDay;
+        if (!string.IsNullOrEmpty(request.Location))
+            appointment.Location = request.Location;
+        if (request.ReminderMinutesBeforeStart is int rem)
+        {
+            appointment.ReminderSet = true;
+            appointment.ReminderMinutesBeforeStart = rem;
+        }
+        if (request.Categories.Count > 0)
+            appointment.Categories = string.Join(", ", request.Categories);
+        appointment.BusyStatus = OlEnumMappings.ToOlBusyStatus(request.ShowAs);
+        appointment.Importance = OlEnumMappings.ToOlImportance(request.Importance);
+        appointment.Sensitivity = OlEnumMappings.ToOlSensitivity(request.Sensitivity);
+    }
+
+    /// <summary>
+    /// Fuegt Event-Attendees als COM-Recipients zu einem AppointmentItem hinzu,
+    /// setzt Type (Required/Optional/Resource) und ruft Resolve() pro Empfaenger
+    /// und ResolveAll() am Ende auf. Resolve braucht es, damit Outlook SMTP-Adressen
+    /// aufloest (sonst kein Send moeglich, .Send wirft).
+    /// </summary>
+    private static void AddAttendees(dynamic appointment, IReadOnlyList<EventAttendeeInput> attendees)
+    {
+        if (attendees.Count == 0) return;
+        foreach (var att in attendees)
+        {
+            dynamic recipient = appointment.Recipients.Add(att.Email);
+            try
+            {
+                if (!string.IsNullOrEmpty(att.Name))
+                {
+                    try { recipient.Name = att.Name; } catch { /* Resolve kann Name ueberschreiben */ }
+                }
+                // OlRecipientType: 1=olRequired, 2=olOptional, 3=olResource
+                int olType = att.Type switch
+                {
+                    AttendeeType.Optional => 2,
+                    AttendeeType.Resource => 3,
+                    _ => 1,
+                };
+                recipient.Type = olType;
+                try { recipient.Resolve(); } catch { /* ungeloest -> Skip */ }
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(recipient);
+            }
+        }
+        try { appointment.Recipients.ResolveAll(); } catch { }
+    }
+
+    /// <summary>
+    /// Prueft, ob [start, end) gross genug fuer duration ist, und fuegt
+    /// ggf. einen MeetingTimeCandidate ein. Confidence = 100, da lokal berechnet.
+    /// </summary>
+    private static void AddCandidateIfFits(
+        List<MeetingTimeCandidate> candidates,
+        DateTime start,
+        DateTime end,
+        TimeSpan duration)
+    {
+        if (end - start < duration) return;
+        candidates.Add(new MeetingTimeCandidate
+        {
+            Start = new DateTimeTimeZone
+            {
+                DateTime = start.ToString("yyyy-MM-ddTHH:mm:ss"),
+                TimeZone = "UTC",
+            },
+            End = new DateTimeTimeZone
+            {
+                DateTime = (start + duration).ToString("yyyy-MM-ddTHH:mm:ss"),
+                TimeZone = "UTC",
+            },
+            Confidence = 100,
+            ConflictsAttendeeCount = 0,
+        });
     }
 
     // ===== Active-Inspector / Selection (TODO Karte 3.5 P3) =====

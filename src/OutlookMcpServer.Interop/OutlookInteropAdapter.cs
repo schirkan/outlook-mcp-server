@@ -796,20 +796,176 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
 
     // ===== Mail: Mutationen =====
 
-    public Task<SendMailResult> SendMailAsync(
+    public async Task<SendMailResult> SendMailAsync(
         SendMailRequest request,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: Application.CreateItem(olMailItem) + .Send()
-        throw new NotImplementedException("SendMailAsync - wird in Karte 3.5 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            dynamic mail = BuildMailItemFromRequest(request);
+            try
+            {
+                // SaveToSentItems: MailItem.DeleteAfterSubmit = !SaveToSentItems
+                // (Outlook-Default ist false -> Mail landet in SentItems)
+                mail.DeleteAfterSubmit = !request.SaveToSentItems;
+                // Deferred delivery (optional, Exchange-Accounts)
+                if (request.SendAt is { } sendAt)
+                {
+                    mail.DeferredDeliveryTime = sendAt.UtcDateTime;
+                }
+                mail.Send();
+                // .Send() verschiebt das Item in den Outbox/SentItems-Pfad;
+                // EntryID ist danach nicht mehr stabil verfuegbar.
+                return new SendMailResult { Sent = true, Id = null };
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(mail);
+            }
+        }, nameof(SendMailAsync));
     }
 
-    public Task<string> CreateDraftAsync(
+    public async Task<string> CreateDraftAsync(
         SendMailRequest request,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: Application.CreateItem(olMailItem) + .Save()
-        throw new NotImplementedException("CreateDraftAsync - wird in Karte 3.5 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            dynamic mail = BuildMailItemFromRequest(request);
+            try
+            {
+                mail.Save();
+                return (string)mail.EntryID;
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(mail);
+            }
+        }, nameof(CreateDraftAsync));
+    }
+
+    /// <summary>
+    /// Erstellt ein MailItem aus einem <see cref="SendMailRequest"/>. Behandelt
+    /// <c>replyToId</c> (MailItem.Reply / .ReplyAll), <c>forwardFromId</c>
+    /// (MailItem.Forward) und Plain-New-Mail (Application.CreateItem(olMailItem)).
+    /// Setzt To/Cc/Bcc (Outlook-Syntax: Semikolon-getrennt), Subject (nur bei
+    /// neuer Mail; Outlook generiert Subject bei Reply/Forward), Body (HTML oder
+    /// Plain), Importance und Attachments (Base64 -&gt; Temp-File).
+    /// Setzt <c>_outlookApp</c>/<c>_mapiNamespace</c> via vorherigem
+    /// <see cref="GetOutlookApplicationAsync"/> voraus.
+    /// </summary>
+    private dynamic BuildMailItemFromRequest(SendMailRequest request)
+    {
+        if (_outlookApp is null || _mapiNamespace is null)
+        {
+            throw new OutlookServiceException(
+                ErrorCode.InternalError,
+                "Outlook-Application nicht initialisiert (GetOutlookApplicationAsync zuerst aufrufen)");
+        }
+
+        dynamic? sourceItem = null;
+        dynamic? mail = null;
+        try
+        {
+            if (!string.IsNullOrEmpty(request.ForwardFromId))
+            {
+                sourceItem = _mapiNamespace.GetItemFromID(request.ForwardFromId, Type.Missing);
+                mail = sourceItem.Forward();
+            }
+            else if (!string.IsNullOrEmpty(request.ReplyToId))
+            {
+                sourceItem = _mapiNamespace.GetItemFromID(request.ReplyToId, Type.Missing);
+                mail = request.ReplyAll ? sourceItem.ReplyAll() : sourceItem.Reply();
+            }
+            else
+            {
+                // 0 = OlItemType.olMailItem
+                mail = _outlookApp.CreateItem(0);
+            }
+
+            // Subject nur bei neuer Mail setzen — Outlook generiert Subject
+            // bei Reply/Forward (inkl. "Re:" / "Fwd:" Prefix).
+            if (sourceItem is null && !string.IsNullOrEmpty(request.Subject))
+            {
+                mail.Subject = request.Subject;
+            }
+
+            // Empfaenger (Outlook-Syntax: Semikolon-getrennt)
+            if (request.To.Count > 0) mail.To = string.Join("; ", request.To);
+            if (request.Cc.Count > 0) mail.Cc = string.Join("; ", request.Cc);
+            if (request.Bcc.Count > 0) mail.Bcc = string.Join("; ", request.Bcc);
+
+            // Body (BodyFormat muss vor dem Body-Set gesetzt werden, sonst
+            // rendert Outlook die Inhalte in das falsche Format)
+            var bodyFormat = OlEnumMappings.ToOlBodyFormat(request.Body.ContentType);
+            mail.BodyFormat = bodyFormat;
+            if (bodyFormat == 2 /* OlBodyFormat.olFormatHTML */)
+            {
+                mail.HTMLBody = request.Body.Content;
+            }
+            else
+            {
+                mail.Body = request.Body.Content;
+            }
+
+            // Importance
+            mail.Importance = OlEnumMappings.ToOlImportance(request.Importance);
+
+            // Attachments (Base64 -> Temp-File -> Attachments.Add)
+            AddAttachments(mail, request.Attachments);
+
+            return mail;
+        }
+        catch
+        {
+            // Falls mail schon erstellt, aber ein Folgeschritt fehlgeschlagen ist:
+            // releasen, sonst Memory-Leak. Caller hat noch keine Referenz.
+            if (mail is not null)
+            {
+                try { Marshal.ReleaseComObject(mail); } catch { }
+            }
+            throw;
+        }
+        finally
+        {
+            if (sourceItem is not null)
+            {
+                try { Marshal.ReleaseComObject(sourceItem); } catch { }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Fuegt Inline-Attachments (Base64-codiert) zu einem MailItem hinzu.
+    /// Schreibt jedes Attachment in eine temporaere Datei (Outlook braucht
+    /// einen Pfad fuer <c>Attachments.Add</c>), ruft <c>Attachments.Add(path,
+    /// OlAttachmentType.olByValue, ...)</c> auf und loescht die Temp-Datei
+    /// danach (Outlook kopiert den Inhalt in den Message-Store).
+    /// </summary>
+    private static void AddAttachments(dynamic mail, IReadOnlyList<InlineAttachment> attachments)
+    {
+        if (attachments.Count == 0) return;
+        foreach (var att in attachments)
+        {
+            var tempPath = Path.Combine(Path.GetTempPath(), $"outlook-mcp-attach-{Guid.NewGuid():N}.bin");
+            try
+            {
+                var bytes = Convert.FromBase64String(att.ContentBase64);
+                File.WriteAllBytes(tempPath, bytes);
+                // Outlook liest die Datei beim .Add() und kopiert sie in den
+                // Message-Store. Source-Datei ist danach nicht mehr noetig.
+                mail.Attachments.Add(tempPath, 1 /* OlAttachmentType.olByValue */, Type.Missing, att.Name);
+            }
+            finally
+            {
+                if (File.Exists(tempPath))
+                {
+                    try { File.Delete(tempPath); } catch { /* defensive */ }
+                }
+            }
+        }
     }
 
     public Task UpdateMailAsync(

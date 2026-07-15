@@ -1,7 +1,0 @@
-<Solution>
-  <Folder Name="/src/">
-    <Project Path="src/OutlookMcpServer.Domain/OutlookMcpServer.Domain.csproj" />
-    <Project Path="src/OutlookMcpServer.Interop/OutlookMcpServer.Interop.csproj" />
-    <Project Path="src/OutlookMcpServer/OutlookMcpServer.csproj" />
-  </Folder>
-</Solution>

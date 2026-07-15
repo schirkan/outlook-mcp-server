@@ -1,0 +1,50 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{47FD09B4-C1DA-4B4D-86FE-5CF247A64369}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OutlookMcpServer.Domain", "src\OutlookMcpServer.Domain\OutlookMcpServer.Domain.csproj", "{3BBEBF8D-F31B-4306-B530-7842F65CE7CB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OutlookMcpServer.Interop", "src\OutlookMcpServer.Interop\OutlookMcpServer.Interop.csproj", "{06ECCFF3-5773-459B-9861-D35D83249AB6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OutlookMcpServer", "src\OutlookMcpServer\OutlookMcpServer.csproj", "{3C899F75-26E7-43B2-9712-03E440FD9B73}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{FCD9CD9C-11F0-4C15-8852-40B1E6D1C978}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OutlookMcpServer.Domain.Tests", "tests\OutlookMcpServer.Domain.Tests\OutlookMcpServer.Domain.Tests.csproj", "{237B7A66-D861-4C31-8BBB-C26E3B008E69}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{3BBEBF8D-F31B-4306-B530-7842F65CE7CB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3BBEBF8D-F31B-4306-B530-7842F65CE7CB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3BBEBF8D-F31B-4306-B530-7842F65CE7CB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3BBEBF8D-F31B-4306-B530-7842F65CE7CB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{06ECCFF3-5773-459B-9861-D35D83249AB6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{06ECCFF3-5773-459B-9861-D35D83249AB6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{06ECCFF3-5773-459B-9861-D35D83249AB6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{06ECCFF3-5773-459B-9861-D35D83249AB6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3C899F75-26E7-43B2-9712-03E440FD9B73}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3C899F75-26E7-43B2-9712-03E440FD9B73}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3C899F75-26E7-43B2-9712-03E440FD9B73}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3C899F75-26E7-43B2-9712-03E440FD9B73}.Release|Any CPU.Build.0 = Release|Any CPU
+		{237B7A66-D861-4C31-8BBB-C26E3B008E69}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{237B7A66-D861-4C31-8BBB-C26E3B008E69}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{237B7A66-D861-4C31-8BBB-C26E3B008E69}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{237B7A66-D861-4C31-8BBB-C26E3B008E69}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{3BBEBF8D-F31B-4306-B530-7842F65CE7CB} = {47FD09B4-C1DA-4B4D-86FE-5CF247A64369}
+		{06ECCFF3-5773-459B-9861-D35D83249AB6} = {47FD09B4-C1DA-4B4D-86FE-5CF247A64369}
+		{3C899F75-26E7-43B2-9712-03E440FD9B73} = {47FD09B4-C1DA-4B4D-86FE-5CF247A64369}
+		{237B7A66-D861-4C31-8BBB-C26E3B008E69} = {FCD9CD9C-11F0-4C15-8852-40B1E6D1C978}
+	EndGlobalSection
+EndGlobal

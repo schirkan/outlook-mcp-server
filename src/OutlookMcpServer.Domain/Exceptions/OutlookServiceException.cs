@@ -14,6 +14,7 @@ public enum ErrorCode
     InvalidInput,
     OutlookNotRunning,
     OutlookBusy,
+    OutlookNotActive,
     PermissionDenied,
     AttachmentTooLarge,
     SendDisabled,

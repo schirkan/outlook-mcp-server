@@ -968,40 +968,181 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         }
     }
 
-    public Task UpdateMailAsync(
+    public async Task UpdateMailAsync(
         string id,
         MailUpdate update,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: MailItem.IsRead, Categories, Importance
-        throw new NotImplementedException("UpdateMailAsync - wird in Karte 3.5 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        await RunComAsync(() =>
+        {
+            dynamic mail = GetMapiNamespace().GetItemFromID(id, Type.Missing);
+            try
+            {
+                // PATCH-Semantik: nur gesetzte Felder anfassen.
+                if (update.IsRead is { } isRead)
+                {
+                    // Outlook: UnRead = true heisst ungelesen -> DTO IsRead = !UnRead
+                    mail.UnRead = !isRead;
+                }
+                if (update.Importance is { } importance)
+                {
+                    mail.Importance = OlEnumMappings.ToOlImportance(importance);
+                }
+                if (update.Categories is not null)
+                {
+                    // Outlook: Categories ist ein Komma-getrennter String.
+                    // Leere Liste loescht alle Kategorien (""), null-Felder werden uebersprungen.
+                    mail.Categories = string.Join(", ", update.Categories);
+                }
+                mail.Save();
+                return true;
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(mail);
+            }
+        }, nameof(UpdateMailAsync));
     }
 
-    public Task<string> MoveMailAsync(
+    public async Task<string> MoveMailAsync(
         string id,
         string destinationFolderId,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: MailItem.Move(destinationFolder)
-        throw new NotImplementedException("MoveMailAsync - wird in Karte 3.5 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            dynamic mail = GetMapiNamespace().GetItemFromID(id, Type.Missing);
+            try
+            {
+                dynamic destFolder = GetFolderByIdOrWellKnownName(destinationFolderId);
+                try
+                {
+                    // MailItem.Move() gibt das verschobene Item zurueck (mit neuer EntryID).
+                    dynamic moved = mail.Move(destFolder);
+                    try
+                    {
+                        return (string)moved.EntryID;
+                    }
+                    finally
+                    {
+                        Marshal.ReleaseComObject(moved);
+                    }
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(destFolder);
+                }
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(mail);
+            }
+        }, nameof(MoveMailAsync));
     }
 
-    public Task<string> CopyMailAsync(
+    public async Task<string> CopyMailAsync(
         string id,
         string destinationFolderId,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: MailItem.Copy()
-        throw new NotImplementedException("CopyMailAsync - wird in Karte 3.5 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            dynamic mail = GetMapiNamespace().GetItemFromID(id, Type.Missing);
+            try
+            {
+                // Outlook COM hat kein direktes CopyTo(folder) auf MailItem.
+                // Copy() legt eine Kopie im selben Ordner an, danach Move() in den Zielordner.
+                dynamic copy = mail.Copy();
+                try
+                {
+                    dynamic destFolder = GetFolderByIdOrWellKnownName(destinationFolderId);
+                    try
+                    {
+                        dynamic moved = copy.Move(destFolder);
+                        try
+                        {
+                            return (string)moved.EntryID;
+                        }
+                        finally
+                        {
+                            Marshal.ReleaseComObject(moved);
+                        }
+                    }
+                    finally
+                    {
+                        Marshal.ReleaseComObject(destFolder);
+                    }
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(copy);
+                }
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(mail);
+            }
+        }, nameof(CopyMailAsync));
     }
 
-    public Task DeleteMailAsync(
+    public async Task DeleteMailAsync(
         string id,
         bool permanent = false,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: MailItem.Delete() oder .Move(deletedItems)
-        throw new NotImplementedException("DeleteMailAsync - wird in Karte 3.5 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        await RunComAsync(() =>
+        {
+            dynamic mail = GetMapiNamespace().GetItemFromID(id, Type.Missing);
+            try
+            {
+                if (permanent)
+                {
+                    // Permanent delete: MailItem.Delete() allein reicht nicht, weil
+                    // Outlook bei Items ausserhalb von DeletedItems in der Regel
+                    // nur einen Soft-Delete macht. Erst in DeletedItems verschieben,
+                    // dann dort loeschen (-> kein Recovery mehr moeglich).
+                    dynamic deletedItems = GetMapiNamespace().GetDefaultFolder(5 /* OlDefaultFolders.olFolderDeletedItems */);
+                    try
+                    {
+                        dynamic inDeleted = mail.Move(deletedItems);
+                        try
+                        {
+                            inDeleted.Delete();
+                        }
+                        finally
+                        {
+                            Marshal.ReleaseComObject(inDeleted);
+                        }
+                    }
+                    finally
+                    {
+                        Marshal.ReleaseComObject(deletedItems);
+                    }
+                }
+                else
+                {
+                    // Soft delete: in DeletedItems verschieben.
+                    dynamic deletedItems = GetMapiNamespace().GetDefaultFolder(5 /* OlDefaultFolders.olFolderDeletedItems */);
+                    try
+                    {
+                        mail.Move(deletedItems);
+                    }
+                    finally
+                    {
+                        Marshal.ReleaseComObject(deletedItems);
+                    }
+                }
+                return true;
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(mail);
+            }
+        }, nameof(DeleteMailAsync));
     }
 
     // ===== Calendar: Kalender =====

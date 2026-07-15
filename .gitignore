@@ -1,0 +1,83 @@
+# Build results
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Ll]og/
+[Ll]ogs/
+artifacts/
+
+# Visual Studio
+.vs/
+*.user
+*.userosscache
+*.suo
+*.userprefs
+*.sln.docstates
+*.vsp
+*.vspx
+*.svclog
+*.scc
+*.tlog
+
+# VS Code / JetBrains Rider
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# NuGet
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+.nuget/
+
+# Test results / coverage
+[Tt]est[Rr]esult*/
+*.coverage
+*.coveragexml
+coverage.*.json
+coverage.*.xml
+coverage.*.info
+TestResult*.xml
+TestResult*.json
+
+# Publish profiles
+**/[Pp]ublishProfiles/
+*.pubxml
+*.pubxml.user
+*.publishproj
+*.publishsettings
+
+# .NET toolchain
+project.lock.json
+project.fragment.lock.json
+*.local.json
+*.pfx
+*.p12
+
+# ASP.NET / appsettings
+appsettings.*.local.json
+appsettings.Development.json
+
+# PowerShell artifacts (this repo's tooling)
+*.transcript
+
+# Outlook Interop artifacts
+_Interop*.log
+*.olo

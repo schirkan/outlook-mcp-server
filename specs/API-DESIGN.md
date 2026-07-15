@@ -367,6 +367,50 @@ return items;
 - Selection im Suchordner oder RSS — wird wie normale Items behandelt (Outlook-eigenes Verhalten, kein Sonderfall)
 - Mixed Selection (technisch nicht möglich im Standard-Explorer, da Folder nur einen Typ führt) — wir werfen keinen Fehler, sondern filtern per `scope`
 
+## Adressbuch-Auflösung (Exchange GAL, COM-only)
+
+Löst **Namen in SMTP-Mailadressen auf** via Exchange-GAL. COM-only — Graph kennt dafür `/users?$search` und `/me/people`, aber Cloud-only; der Outlook-COM-Adapter löst rein lokal über das geladene Outlook-Profil.
+
+**Use-Case**: "Schicke eine Mail an Martin" (Display-Name → SMTP), "Prüfe ob ein Name gültig ist", "Löse einen Verteiler zur Anzeige auf".
+
+### `resolveName`
+
+**Input**:
+- `query` (string, required, MinLength 1): Suchbegriff — Substring-Match auf `ExchangeUser.Name` ODER `PrimarySmtpAddress` (case-insensitive)
+- `top` (int, default 10, max 50): harte Obergrenze gegen zu große GAL-Trefferlisten
+
+**Output**: `PagedResult<ResolvedRecipient>` mit Properties:
+- `DisplayName` (string)
+- `EmailAddress` (string — der **resolved** SMTP-Primary, nicht der Anzeigename)
+- `Type` (`User|Group|Room|Other`) — Enum
+- `JobTitle` (string?, optional)
+- `Department` (string?, optional)
+- `OfficeLocation` (string?, optional)
+- `Alias` (string?, optional, Exchange-Alias)
+
+**Errors**:
+- `InvalidInput` wenn `query` leer oder `top` außerhalb [1, 50]
+- `OutlookNotRunning` wenn Session nicht initialisiert
+
+**Implementierung** (COM):
+- `Application.Session.GetGlobalAddressList()` → `AddressList`
+- `addressList.AddressEntries` iterieren via `GetFirst()` / `GetNext()`
+- pro `AddressEntry`:
+  - `entry.GetExchangeUser()` (kann `null` sein bei Verteilerlisten/Räumen) → `entry.GetExchangeDistributionList()` für `Type=Group`
+  - Match auf `Name.Contains(query, IgnoreCase)` ODER `PrimarySmtpAddress.Contains(query, IgnoreCase)`
+- Bei `== top` abbrechen, `Marshal.ReleaseComObject` für jedes COM-Objekt im finally
+
+**Edge Cases**:
+- Verteilerlisten → `Type=Group`, Members NICHT rekursiv aufgelöst (Use-Case nur Anzeige)
+- Room-Adressen → `Type=Room`
+- `query="*"` → alle GAL-Einträge (durch `top` gecappt)
+- `query=""` → `InvalidInput`
+
+**Was NICHT in v1 ist** (per DECISIONS.md):
+- Adressbuch-CRUD (Create/Update/Delete) — bleibt v1.1
+- `listAddressBooks()` (Multi-Buch-Browser) — Martin hat nur EIN Tool gewünscht
+- `showSelectNamesDialog` (UI-getrieben, für MCP-Clients schwer darstellbar)
+
 ### Polymorphe DTO-Serialisierung (`ActiveItem`)
 
 `ActiveItem` ist ein `abstract record` mit `JsonDerivedType`-Attributen (STJ, ab .NET 7) — Diskriminator ist `kind`:
@@ -429,6 +473,7 @@ Der MCP-Client braucht keine Type-Hints — `kind` im Response reicht zum Dispat
 | `POST /me/events/{id}/accept` | `respondToEvent` (accepted) | `MeetingItem.Respond(olResponseAccept, ...)` |
 | — | `getActiveItem` | `Application.ActiveInspector()?.CurrentItem` |
 | — | `getSelectedItems` | `Application.ActiveExplorer()?.Selection` |
+| — | `resolveName` | `Session.GetGlobalAddressList()` + `AddressEntries.GetExchangeUser()` |
 
 ## Fehler-Schema (einheitlich für alle Tools)
 

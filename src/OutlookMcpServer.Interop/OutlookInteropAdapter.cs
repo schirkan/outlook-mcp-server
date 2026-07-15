@@ -419,4 +419,21 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         // TODO Karte 3.5: Self-Calendar scan + Luecken >= DurationMinutes
         return Task.FromResult<IReadOnlyList<MeetingTimeCandidate>>(Array.Empty<MeetingTimeCandidate>());
     }
+
+    // ===== Active-Inspector / Selection (TODO Karte 3.5 P3) =====
+
+    public Task<ActiveItem?> GetActiveItemAsync(CancellationToken cancellationToken = default)
+    {
+        // TODO Karte 3.5 P3: Application.ActiveInspector()?.CurrentItem + Type-Dispatch (MailItem | AppointmentItem -> DTO)
+        throw new NotImplementedException("GetActiveItemAsync - wird in Karte 3.5 P3 implementiert");
+    }
+
+    public Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
+        SelectionScope scope,
+        int top = 50,
+        CancellationToken cancellationToken = default)
+    {
+        // TODO Karte 3.5 P3: Application.ActiveExplorer()?.Selection + Scope-Filter
+        throw new NotImplementedException("GetSelectedItemsAsync - wird in Karte 3.5 P3 implementiert");
+    }
 }

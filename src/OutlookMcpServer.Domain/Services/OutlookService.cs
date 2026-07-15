@@ -282,6 +282,23 @@ public sealed class OutlookService : IOutlookService
         return _adapter.FindMeetingTimesAsync(request, cancellationToken);
     }
 
+    // ===== Active-Inspector / Selection (COM-only) =====
+
+    public Task<ActiveItem?> GetActiveItemAsync(CancellationToken cancellationToken = default)
+    {
+        // Passthrough: null ist valides Resultat (kein Inspector oder v1-out-of-scope Typ)
+        return _adapter.GetActiveItemAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
+        SelectionScope scope,
+        int top = 50,
+        CancellationToken cancellationToken = default)
+    {
+        ValidationHelpers.ValidateRange(top, 1, 250, nameof(top));
+        return await _adapter.GetSelectedItemsAsync(scope, top, cancellationToken);
+    }
+
     // ===== Private Helpers =====
 
     private void EnsureSendAllowed(SendMailRequest request)

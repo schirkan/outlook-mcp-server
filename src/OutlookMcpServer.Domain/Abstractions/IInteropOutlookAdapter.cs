@@ -123,4 +123,21 @@ public interface IInteropOutlookAdapter
     Task<IReadOnlyList<MeetingTimeCandidate>> FindMeetingTimesAsync(
         FindMeetingTimesRequest request,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// COM-Mapping fuer <see cref="IOutlookService.GetActiveItemAsync"/>:
+    /// <c>Application.ActiveInspector()?.CurrentItem</c> + Type-Dispatch.
+    /// </summary>
+    Task<ActiveItem?> GetActiveItemAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// COM-Mapping fuer <see cref="IOutlookService.GetSelectedItemsAsync"/>:
+    /// <c>Application.ActiveExplorer()?.Selection</c> + Scope-Filter.
+    /// ActiveExplorer()==null soll als <c>OutlookInteropException(OutlookNotActive, ...)</c>
+    /// hochkommen.
+    /// </summary>
+    Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
+        SelectionScope scope,
+        int top = 50,
+        CancellationToken cancellationToken = default);
 }

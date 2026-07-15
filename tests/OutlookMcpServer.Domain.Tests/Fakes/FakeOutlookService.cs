@@ -198,6 +198,24 @@ public sealed class FakeOutlookService : IOutlookService
         return Task.FromResult<IReadOnlyList<MeetingTimeCandidate>>(Array.Empty<MeetingTimeCandidate>());
     }
 
+    // ===== Active-Inspector / Selection (Fakes fuer Tests) =====
+
+    public Task<ActiveItem?> GetActiveItemAsync(CancellationToken cancellationToken = default)
+    {
+        Calls.Add(nameof(GetActiveItemAsync));
+        // Default: kein Inspector offen (Tests koennen via SeedActiveMail/SeedActiveEvent ueberschreiben)
+        return Task.FromResult<ActiveItem?>(null);
+    }
+
+    public Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
+        SelectionScope scope,
+        int top = 50,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"{nameof(GetSelectedItemsAsync)}:scope={scope},top={top}");
+        return Task.FromResult<IReadOnlyList<ActiveItem>>(Array.Empty<ActiveItem>());
+    }
+
     private void ThrowIfInjected()
     {
         if (InjectException is not null)

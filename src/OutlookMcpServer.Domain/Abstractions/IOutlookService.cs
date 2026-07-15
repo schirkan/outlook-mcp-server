@@ -134,4 +134,24 @@ public interface IOutlookService
     Task<IReadOnlyList<MeetingTimeCandidate>> FindMeetingTimesAsync(
         FindMeetingTimesRequest request,
         CancellationToken cancellationToken = default);
+
+    // ===== Active-Inspector / Selection (COM-only, kein Graph-Aequivalent) =====
+
+    /// <summary>
+    /// Liefert das aktuell im aktiven Outlook-Inspector-Fenster offene Item
+    /// (MailItem oder AppointmentItem). null wenn kein Inspector offen oder
+    /// Item-Typ nicht in v1-Scope (Tasks/Contacts sind v1.1).
+    /// </summary>
+    Task<ActiveItem?> GetActiveItemAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Liefert die im aktiven Outlook-Explorer-Fenster markierten Items,
+    /// optional gefiltert nach scope (mail/calendar/any) und gecappt durch top (1-250).
+    /// Selection.Count==0 ist valides Empty-Result (kein Fehler).
+    /// Wirft OutlookNotActive wenn ActiveExplorer()==null.
+    /// </summary>
+    Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
+        SelectionScope scope,
+        int top = 50,
+        CancellationToken cancellationToken = default);
 }

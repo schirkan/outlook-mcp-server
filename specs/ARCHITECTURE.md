@@ -162,6 +162,44 @@ Client
   <- { id: "EntryID-..." }
 ```
 
+### Active-Item / Selection: „Verarbeite die offene Mail / die markierten Mails"
+
+```
+Client
+  -> MCP: tools/call getActiveItem
+OutlookMcpServer
+  -> ActiveSelectionTools.GetActiveItemAsync()
+  -> IOutlookService.GetActiveItemAsync()
+  -> InteropOutlookAdapter:
+     - var insp = _application.ActiveInspector()   // null wenn kein Inspector
+     - if (insp == null) return null
+     - switch (insp.CurrentItem):
+         MailItem mi        -> map -> ActiveMail  { kind: "mail",  item: MailMessage }
+         AppointmentItem ai -> map -> ActiveEvent { kind: "event", item: CalendarEvent }
+         _                  -> null (z. B. Contact/Task in v1.1)
+Client
+  <- { kind: "mail", item: {...} } | null
+
+Client
+  -> MCP: tools/call getSelectedItems { scope: "mail", top: 50 }
+OutlookMcpServer
+  -> ActiveSelectionTools.GetSelectedItemsAsync("mail", 50)
+  -> IOutlookService.GetSelectedItemsAsync("mail", 50)
+  -> InteropOutlookAdapter:
+     - var exp = _application.ActiveExplorer()
+     - if (exp == null) throw OutlookServiceException(OutlookNotActive, "kein Explorer aktiv")
+     - var sel = exp.Selection
+     - fuer i=1..min(sel.Count, top): Map -> ActiveItem (Mail/Event, andere gefiltert)
+Client
+  <- { value: [...], count: N }
+```
+
+**Wichtige Eigenschaft**: Beide Tools sind reine Reads auf den UI-State. Sie verändern weder Selection noch offene Inspektoren. Das hält die Semantik klar und macht sie kombinierbar mit klassischen Mutationen (z. B. „verschicke die Reply auf die selektierte Mail").
+
+### Active-Selection und Outlook-Single-Threading
+
+COM-Single-Threading-Apartment: alle Outlook-COM-Aufrufe laufen im STA-Thread. Der MCP-Server ist per Default `Main(args).Run()` ein Top-Level STA-Thread (siehe Karte 5: `Host.CreateApplicationBuilder` + `app.Run()`); Outlook-COM-Aufrufe müssen in den richtigen Apartment gemarshallt werden. Wir verwenden die PIA-eigenen Calls (sie sind MTA-frei), nicht `Task.Run` für COM-Operationen.
+
 ## Sicherheit & Isolation
 
 - **Prozessgrenze**: Server läuft im User-Kontext des angemeldeten Windows-Benutzers. Outlook-Profil ist implizit.

@@ -287,6 +287,126 @@ Implementierung: `MeetingItem.Respond(OlResponseStatus, true, true)` (letzter Pa
 ```
 Implementierung: iteriere `Items.Find` über den Self-Calendar im Zeitfenster, berechne Lücken >= `durationMinutes`. v1: Self only. v1.1: optional auch über shared/delegated Kalender (via `Recipient.FreeBusy`).
 
+## Active-Inspector / Selection (Outlook-UI-State, COM-only)
+
+Diese Tools sind ein **Alleinstellungsmerkmal von COM-Interop gegenüber Microsoft Graph** — Graph ist Server-seitig und hat keinen Zugriff auf den lokalen Outlook-UI-State. Die COM-Properties `Application.ActiveInspector()`, `Inspector.CurrentItem`, `Application.ActiveExplorer()` und `Explorer.Selection` liefern genau diesen State.
+
+Wichtig: alle diese Tools sind **read-only auf den UI-State**. Sie öffnen oder verändern keine Fenster selbst.
+
+### `getActiveItem`
+
+**Beschreibung**: Liefert das Item, das aktuell im Vordergrund-Inspector-Fenster offen ist (Doppelklick auf eine Mail / einen Termin). Ein typischer Use-Case: „Fasse die Mail zusammen, die ich gerade offen habe" oder „lege einen Folgetermin an, basierend auf dem Termin, der gerade offen ist".
+
+**Input**: (keine)
+
+**Output** (polymorph, diskriminiert via `kind`):
+```json
+{ "kind": "mail",  "item": { ...MailMessage... } }
+| { "kind": "event", "item": { ...CalendarEvent... } }
+| null
+```
+
+**Errors**: keine — kein Inspector offen → `null` (statt Exception). Inspektor, der ein Item öffnet, das wir nicht kennen (z. B. ein leeres `MailItem` im Entwurfsmodus ohne Empfänger) → wird wie `null` behandelt und geloggt.
+
+**Implementierung**:
+```csharp
+var insp = Application.ActiveInspector();   // ggf. null
+if (insp is null) return null;
+var current = insp.CurrentItem;            // _MailItem | _AppointmentItem | _ContactItem | _TaskItem | ...
+return current switch
+{
+    MailItem mi        => new ActiveItem { Kind = "mail",  Item = MapToMail(mi) },
+    AppointmentItem ai => new ActiveItem { Kind = "event", Item = MapToEvent(ai) },
+    _                  => null  // für Tasks/Contacts/Notes (V1.1-Backlog)
+};
+```
+
+**v1-Scope**: `mail` (gelesen oder im Entwurfs-/Edit-Modus), `event` (gelesen oder in Bearbeitung). Tasks/Contacts sind v1.1.
+
+### `getSelectedItems`
+
+**Beschreibung**: Liefert alle Items, die im aktuell aktiven Explorer-Fenster markiert sind (Posteingang mit 3 Mails angeklickt, Kalender-View mit 2 Terminen markiert, etc.). Klassischer Bulk-Workflow: „Lösch die 12 markierten Spam-Mails" oder „Erstelle Follow-up-Termine zu allen markierten Mails".
+
+**Input**:
+- `scope` (optional, string, default `"any"`): `"mail"` | `"calendar"` | `"any"` — filtert auf Item-Typen.
+- `top` (optional, int, default 50, max 250): harte Obergrenze, schützt vor zu großen Selection-Batches.
+
+**Output**:
+```json
+{
+  "value": [
+    { "kind": "mail",  "item": { ...MailMessage... } },
+    { "kind": "event", "item": { ...CalendarEvent... } }
+  ],
+  "count": 3
+}
+```
+
+**Errors**:
+- `OutlookNotActive` — wenn `Application.ActiveExplorer()` `null` ist (z. B. nur ein Inspector offen, kein Explorer-Fenster)
+- `InvalidInput` — wenn `scope` kein gültiger Wert ist oder `top` außerhalb `[1, 250]`
+
+**Implementierung**:
+```csharp
+var explorer = Application.ActiveExplorer();   // ggf. null
+if (explorer is null) throw OutlookServiceException(OutlookNotActive, "Kein Explorer aktiv");
+var selection = explorer.Selection;           // _Selection-Collection
+var items = new List<ActiveItem>();
+for (int i = 1; i <= Math.Min(selection.Count, top); i++) {
+    var sel = selection[i];
+    switch (sel) {
+        case MailItem mi:        if (scope is "any" or "mail")     items.Add(MapMail(mi)); break;
+        case AppointmentItem ai: if (scope is "any" or "calendar") items.Add(MapEvent(ai)); break;
+    }
+}
+return items;
+```
+
+**Edge Cases**:
+- `Selection.Count == 0` → `value: []`, `count: 0`, **kein** Fehler (valide Selection, einfach nichts markiert)
+- Selection im Suchordner oder RSS — wird wie normale Items behandelt (Outlook-eigenes Verhalten, kein Sonderfall)
+- Mixed Selection (technisch nicht möglich im Standard-Explorer, da Folder nur einen Typ führt) — wir werfen keinen Fehler, sondern filtern per `scope`
+
+### Polymorphe DTO-Serialisierung (`ActiveItem`)
+
+`ActiveItem` ist ein `abstract record` mit `JsonDerivedType`-Attributen (STJ, ab .NET 7) — Diskriminator ist `kind`:
+
+```csharp
+[JsonDerivedType(typeof(ActiveMail),  "mail")]
+[JsonDerivedType(typeof(ActiveEvent), "event")]
+public abstract record ActiveItem
+{
+    [JsonPropertyName("kind")]
+    public abstract string Kind { get; init; }
+}
+
+public sealed record ActiveMail : ActiveItem
+{
+    public override string Kind { get; init; } = "mail";
+    [JsonPropertyName("item")] public required MailMessage Item { get; init; }
+}
+
+public sealed record ActiveEvent : ActiveItem
+{
+    public override string Kind { get; init; } = "event";
+    [JsonPropertyName("item")] public required CalendarEvent Item { get; init; }
+}
+
+public sealed record ActiveMail : ActiveItem
+{
+    public override string Kind { get; init; } = "mail";
+    [JsonPropertyName("item")] public required MailMessage Item { get; init; }
+}
+
+public sealed record ActiveEvent : ActiveItem
+{
+    public override string Kind { get; init; } = "event";
+    [JsonPropertyName("item")] public required CalendarEvent Item { get; init; }
+}
+```
+
+Der MCP-Client braucht keine Type-Hints — `kind` im Response reicht zum Dispatchen.
+
 ## Mapping: Microsoft Graph → OutlookMcpServer
 
 | Graph Endpoint | MCP-Tool | Interop-Calls |
@@ -307,6 +427,8 @@ Implementierung: iteriere `Items.Find` über den Self-Calendar im Zeitfenster, b
 | `PATCH /me/events/{id}` | `updateEvent` | `AppointmentItem` mutieren → `.Save()` / `.Send()` |
 | `DELETE /me/events/{id}` | `deleteEvent` | `AppointmentItem.Delete()` |
 | `POST /me/events/{id}/accept` | `respondToEvent` (accepted) | `MeetingItem.Respond(olResponseAccept, ...)` |
+| — | `getActiveItem` | `Application.ActiveInspector()?.CurrentItem` |
+| — | `getSelectedItems` | `Application.ActiveExplorer()?.Selection` |
 
 ## Fehler-Schema (einheitlich für alle Tools)
 

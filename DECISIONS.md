@@ -163,3 +163,35 @@ Architektur- und Designentscheidungen mit Datum + Begründung. Wird iterativ erw
 - **Free/Busy über mehrere Postfächer / Delegierte Kalender** (v1.1)
 - **MIME-Rekonstruktion aus `PR_TRANSPORT_MESSAGE_HEADERS`** (`getMailMime`, v1.1)
 - **Search-Folders / Inbox-Rules** (v1.1)
+
+---
+
+## 2026-07-15 — Active-Inspector / Selection als v1-Scope
+
+**Status**: accepted
+
+**Kontext**: Martins Rückfrage „Gibt es eine Möglichkeit, auf die aktuelle geöffnete Mail / den geöffneten Termin / selektierten Eintrag in einer Liste zuzugreifen?". Microsoft Graph kann das nicht (Server-seitig, kein UI-State). COM-Interop bietet `Application.ActiveInspector()`, `Inspector.CurrentItem`, `Application.ActiveExplorer()`, `Explorer.Selection` als native API. Das Feature ist ein **Alleinstellungsmerkmal** dieses Servers gegenüber einem reinen Graph-Wrapper.
+
+**Entscheidung**: Feature wird in **Karte 3.5** (echte COM-Implementierung) aufgenommen — nicht als separate Karte. Spec zuerst (`specs/VISION.md`, `specs/API-DESIGN.md`, `specs/ARCHITECTURE.md`), dann Implementation in einem Schwung mit den 24 COM-Adapter-Methoden.
+
+**Tool-Surface (v1)**:
+- `getActiveItem()` → polymorphe Rückgabe (`{kind:"mail",item}` / `{kind:"event",item}` / `null`) per STJ `JsonDerivedType`
+- `getSelectedItems(scope, top)` → Liste markierter Items mit Filter und Cap, `OutlookNotActive` wenn kein Explorer aktiv
+
+**Scope v1 für Active-Inspector**: `mail` (gelesen oder im Entwurfs-/Edit-Modus), `event` (gelesen oder in Bearbeitung). Tasks/Contacts bleiben v1.1.
+**Scope v1 für Selection**: `ActiveExplorer()` muss aktiv sein, sonst Fehler. `Selection.Count == 0` ist valide (kein Fehler, leere Liste). `scope`-Filter ist „mail" / „calendar" / „any" (default „any").
+
+**Alternativen** (verworfen):
+- **Eigene Karte nach 3.5** (z. B. Karte 3.6): bricht Scope, COM wird eh neu geschrieben → ein Schwung günstiger
+- **Reines Spec-Dokument ohne Impl**: macht das Feature nicht nutzbar
+- **Auch für Tasks/Contacts**: sprengt V1-Scope laut VISION.md
+- **Write auf den UI-State (z. B. Selection manipulieren)**: würde API-Semantik sprengen und ist nicht angefragt — bleibt explizit out-of-scope
+
+**Konsequenzen**:
+- 2 neue Methoden auf `IOutlookService` und `IInteropOutlookAdapter`: `GetActiveItemAsync`, `GetSelectedItemsAsync`
+- 2 neue DTOs im Domain-Layer: `ActiveItem` (abstract record + `ActiveMail`/`ActiveEvent` Sub-Types), `SelectedItems` (record mit `value` + `count`)
+- 2 neue MCP-Tools: `getActiveItem`, `getSelectedItems` — leben in neuer `ActiveSelectionTools`-Klasse in `src/OutlookMcpServer/Tools/`
+- `OutlookInteropAdapter` bekommt 2 zusätzliche COM-Mappings (Inspector + Explorer)
+- `FakeOutlookService` + `FakeInteropAdapter` erweitert; `OutlookServiceTests` deckt `OutlookNotActive` ab; `ActiveSelectionToolsTests` deckt Polymorphie + Scope-Filter ab
+- Specs aktualisiert: `VISION.md` (in-scope), `API-DESIGN.md` (Tool-Spec + Mapping-Tabelle), `ARCHITECTURE.md` (Datenfluss + Single-Threading-Hinweis)
+- Token-Budget: aktiv — `ActiveSelectionTools`-Klasse + 2 Methoden + DTOs in bestehende Tests einplanen (vermutlich +200-350 LOC im Domain/Tools, +300-450 LOC im Interop)

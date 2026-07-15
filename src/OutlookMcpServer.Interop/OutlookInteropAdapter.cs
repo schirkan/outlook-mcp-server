@@ -124,6 +124,50 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     }
 
     /// <summary>
+    /// Mappt ein COM-MAPIFolder-Objekt auf das <see cref="MailFolder"/>-DTO.
+    /// WellKnownName bleibt null (korrektes Mapping wuerde Vergleich mit
+    /// Application.Session.GetDefaultFolder erfordern — wird in einer
+    /// Folge-Phase ergaenzt, falls Use-Cases auftauchen).
+    /// </summary>
+    private static MailFolder MapMailFolder(dynamic folder, string? parentId)
+    {
+        var entryId = (string)folder.EntryID;
+        var name = (string)folder.Name;
+        int childCount = 0;
+        int totalCount = 0;
+        int unreadCount = 0;
+        try { childCount = (int)folder.Folders.Count; } catch { }
+        try { totalCount = (int)folder.Items.Count; } catch { }
+        try { unreadCount = (int)folder.UnReadItemCount; } catch { }
+
+        string? actualParentId = parentId;
+        if (actualParentId is null)
+        {
+            try
+            {
+                var parent = folder.Parent;
+                if (parent is not null)
+                {
+                    actualParentId = (string)parent.EntryID;
+                    Marshal.ReleaseComObject(parent);
+                }
+            }
+            catch { }
+        }
+
+        return new MailFolder
+        {
+            Id = entryId,
+            DisplayName = name,
+            WellKnownName = null, // TODO: spaeter — braucht App-Vergleich
+            ParentFolderId = actualParentId,
+            ChildFolderCount = childCount,
+            TotalItemCount = totalCount,
+            UnreadItemCount = unreadCount,
+        };
+    }
+
+    /// <summary>
     /// Instanziiert Outlook.Application via COM. Wenn Outlook bereits laeuft,
     /// wird die bestehende Instanz zurueckgegeben (COM-Singleton); sonst wird
     /// eine neue gestartet. Ersetzt Marshal.GetActiveObject (in .NET 8 nicht
@@ -167,11 +211,11 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         }
     }
 
-    private async Task<T> RunComAsync<T>(Func<Task<T>> func, string opName)
+    private Task<T> RunComAsync<T>(Func<T> func, string opName)
     {
         try
         {
-            return await func();
+            return Task.FromResult(func());
         }
         catch (COMException ex)
         {
@@ -194,24 +238,67 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
 
     // ===== Mail: Ordner =====
 
-    public Task<PagedResult<MailFolder>> ListMailFoldersAsync(
+    public async Task<PagedResult<MailFolder>> ListMailFoldersAsync(
         string? parentFolderId = null,
         bool includeHidden = false,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: echte Implementation
-        return Task.FromResult(new PagedResult<MailFolder>
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
         {
-            Value = Array.Empty<MailFolder>(),
-            NextSkip = null,
-        });
+            var result = new List<MailFolder>();
+            dynamic parent = parentFolderId is null
+                ? GetMapiNamespace()
+                : GetMapiNamespace().GetFolderFromID(parentFolderId, Type.Missing);
+            try
+            {
+                foreach (var item in parent.Folders)
+                {
+                    dynamic folder = item;
+                    try
+                    {
+                        var name = (string)folder.Name;
+                        if (!includeHidden && OlEnumMappings.IsOutlookHiddenFolderName(name))
+                        {
+                            continue;
+                        }
+                        result.Add(MapMailFolder(folder, parentFolderId));
+                    }
+                    finally
+                    {
+                        Marshal.ReleaseComObject(folder);
+                    }
+                }
+            }
+            finally
+            {
+                if (parentFolderId is not null) Marshal.ReleaseComObject(parent);
+            }
+            return new PagedResult<MailFolder>
+            {
+                Value = result,
+                NextSkip = null,
+            };
+        }, nameof(ListMailFoldersAsync));
     }
 
-    public Task<MailFolder> GetMailFolderAsync(
+    public async Task<MailFolder> GetMailFolderAsync(
         string folderId,
         CancellationToken cancellationToken = default)
     {
-        throw new NotImplementedException("GetMailFolderAsync - wird in Karte 3.5 implementiert");
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            dynamic folder = GetFolderByIdOrWellKnownName(folderId);
+            try
+            {
+                return MapMailFolder(folder, null);
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(folder);
+            }
+        }, nameof(GetMailFolderAsync));
     }
 
     // ===== Mail: Nachrichten =====

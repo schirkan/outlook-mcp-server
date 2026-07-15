@@ -116,6 +116,12 @@ internal static class OlEnumMappings
         _ => null,
     };
 
+    // ----- Folder Visibility -----
+    // Outlook-Konvention: Ordnernamen, die mit "$" beginnen, sind versteckt/system
+    // (z. B. "$Default Extension", "$MapiNonDefault", "$MapiSpecialChar").
+    public static bool IsOutlookHiddenFolderName(string folderName) =>
+        !string.IsNullOrEmpty(folderName) && folderName.StartsWith("$", StringComparison.Ordinal);
+
     // ----- COMException HResult -> ErrorCode -----
     // Wichtige Outlook-Fehler-Codes:
     // - 0x8004010F (RPC_E_DISCONNECTED): Outlook nicht erreichbar

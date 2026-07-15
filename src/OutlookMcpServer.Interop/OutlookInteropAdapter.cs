@@ -168,6 +168,166 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     }
 
     /// <summary>
+    /// Mappt ein COM-MailItem auf das <see cref="MailMessage"/>-DTO. Bei
+    /// <paramref name="includeBody"/>=false wird der Body weggelassen (fuer
+    /// ListMails-Use-Case, wo BodyPreview reicht und das Voll-Body-HTML teuer ist).
+    /// ComException in optionalen Properties wird defensiv mit Fallback-Wert gefangen.
+    /// </summary>
+    private static MailMessage MapMailItem(dynamic mail, bool includeBody)
+    {
+        var entryId = (string)mail.EntryID;
+        string? convId = TryGetString(mail, "ConversationID");
+        string? subject = TryGetString(mail, "Subject");
+        string? bodyPreview = TryGetString(mail, "BodyPreview");
+
+        ItemBody? body = null;
+        if (includeBody)
+        {
+            string text = TryGetString(mail, "Body") ?? string.Empty;
+            string html = TryGetString(mail, "HTMLBody") ?? string.Empty;
+            int fmt = 1;
+            try { fmt = (int)mail.BodyFormat; } catch { }
+            if (fmt == 2 && !string.IsNullOrEmpty(html))
+            {
+                body = new ItemBody { ContentType = ItemBodyType.Html, Content = html };
+            }
+            else
+            {
+                body = new ItemBody { ContentType = ItemBodyType.Text, Content = text };
+            }
+        }
+
+        Recipient? from = null;
+        try
+        {
+            var senderName = TryGetString(mail, "SenderName");
+            var senderAddress = TryGetString(mail, "SenderEmailAddress");
+            if (mail.Sender is not null && !string.IsNullOrEmpty(senderAddress))
+            {
+                from = new Recipient
+                {
+                    EmailAddress = new EmailAddress { Name = senderName, Address = senderAddress },
+                };
+            }
+        }
+        catch { }
+
+        var toRecipients = MapRecipients(TryGetDynamic(mail, "To"));
+        var ccRecipients = MapRecipients(TryGetDynamic(mail, "CC"));
+        var bccRecipients = MapRecipients(TryGetDynamic(mail, "BCC"));
+
+        DateTimeOffset? sent = null;
+        DateTimeOffset? received = null;
+        try { sent = (DateTimeOffset)mail.SentOn; } catch { }
+        try { received = (DateTimeOffset)mail.ReceivedTime; } catch { }
+
+        bool hasAttachments = false;
+        try { hasAttachments = (int)mail.Attachments.Count > 0; } catch { }
+
+        // Outlook: UnRead = true heisst "ungelesen" → DTO IsRead = !UnRead
+        bool isUnread = false;
+        try { isUnread = (bool)mail.UnRead; } catch { }
+
+        var importanceRaw = 1;
+        try { importanceRaw = (int)mail.Importance; } catch { }
+        var importance = OlEnumMappings.ToImportance(importanceRaw);
+
+        var categories = new List<string>();
+        try
+        {
+            foreach (var cat in mail.Categories)
+            {
+                var s = (string)cat;
+                if (!string.IsNullOrEmpty(s)) categories.Add(s);
+            }
+        }
+        catch { }
+
+        return new MailMessage
+        {
+            Id = entryId,
+            ConversationId = convId,
+            Subject = subject,
+            BodyPreview = bodyPreview,
+            Body = body,
+            From = from,
+            ToRecipients = toRecipients,
+            CcRecipients = ccRecipients,
+            BccRecipients = bccRecipients,
+            SentDateTime = sent,
+            ReceivedDateTime = received,
+            HasAttachments = hasAttachments,
+            Importance = importance,
+            IsRead = !isUnread,
+            Categories = categories,
+        };
+    }
+
+    /// <summary>
+    /// Iteriert ueber eine COM-Recipients-Collection und mappt auf
+    /// <see cref="Recipient"/>-DTOs. Wirft/warnt nicht bei einzelnen
+    /// kaputten Empfaengern — gibt leere Liste fuer null-Input zurueck.
+    /// </summary>
+    private static IReadOnlyList<Recipient> MapRecipients(dynamic recipients)
+    {
+        var list = new List<Recipient>();
+        if (recipients is null) return list;
+        try
+        {
+            foreach (var rec in recipients)
+            {
+                try
+                {
+                    if (rec is null) continue;
+                    var name = TryGetString(rec, "Name");
+                    var address = TryGetString(rec, "Address");
+                    if (string.IsNullOrEmpty(address)) continue;
+                    list.Add(new Recipient
+                    {
+                        EmailAddress = new EmailAddress { Name = name, Address = address },
+                    });
+                }
+                finally
+                {
+                    if (rec is not null) Marshal.ReleaseComObject(rec);
+                }
+            }
+        }
+        catch { }
+        return list;
+    }
+
+    /// <summary>Defensive Property-Access-Wrapper fuer COM dynamic-Properties.</summary>
+    private static string? TryGetString(dynamic obj, string propertyName)
+    {
+        try { return (string?)obj.GetType().GetProperty(propertyName)?.GetValue(obj); }
+        catch { return null; }
+    }
+
+    private static dynamic? TryGetDynamic(dynamic obj, string propertyName)
+    {
+        try { return obj.GetType().GetProperty(propertyName)?.GetValue(obj); }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Kombiniert benutzerdefinierten DASL-Filter mit optionalem Volltext-Such-Query.
+    /// Suchbegriff wird in einfache Hochkommata eingeschlossen (mit Escape "''" fuer " innerhalb).
+    /// Volltext-Match ueber Subject + Body via DASL LIKE.
+    /// </summary>
+    private static string CombineDaslFilters(string? userFilter, string? search)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(userFilter)) parts.Add(userFilter);
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var escaped = search!.Replace("'", "''");
+            parts.Add($"([Subject] LIKE '%{escaped}%' OR [Body] LIKE '%{escaped}%')");
+        }
+        return string.Join(" AND ", parts);
+    }
+
+    /// <summary>
     /// Instanziiert Outlook.Application via COM. Wenn Outlook bereits laeuft,
     /// wird die bestehende Instanz zurueckgegeben (COM-Singleton); sonst wird
     /// eine neue gestartet. Ersetzt Marshal.GetActiveObject (in .NET 8 nicht
@@ -303,7 +463,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
 
     // ===== Mail: Nachrichten =====
 
-    public Task<PagedResult<MailMessage>> ListMailsAsync(
+    public async Task<PagedResult<MailMessage>> ListMailsAsync(
         string folderId,
         int top = 25,
         int skip = 0,
@@ -311,12 +471,54 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         string? search = null,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: echte Implementation mit Items.Restrict + Sort
-        return Task.FromResult(new PagedResult<MailMessage>
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
         {
-            Value = Array.Empty<MailMessage>(),
-            NextSkip = null,
-        });
+            dynamic folder = GetFolderByIdOrWellKnownName(folderId);
+            try
+            {
+                string combinedFilter = CombineDaslFilters(filter, search);
+                dynamic items = folder.Items;
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(combinedFilter))
+                    {
+                        items = items.Restrict(combinedFilter);
+                    }
+                    items.Sort("[ReceivedTime]", true); // newest first
+
+                    int total = (int)items.Count;
+                    int start = Math.Min(skip, total);
+                    int end = Math.Min(skip + top, total);
+                    var slice = new List<MailMessage>(end - start);
+                    for (int i = start; i < end; i++)
+                    {
+                        dynamic item = items.Item(i + 1); // COM-Auflistungen sind 1-basiert
+                        try
+                        {
+                            slice.Add(MapMailItem(item, includeBody: false));
+                        }
+                        finally
+                        {
+                            Marshal.ReleaseComObject(item);
+                        }
+                    }
+                    return new PagedResult<MailMessage>
+                    {
+                        Value = slice,
+                        NextSkip = end < total ? end : (int?)null,
+                    };
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(items);
+                }
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(folder);
+            }
+        }, nameof(ListMailsAsync));
     }
 
     public Task<MailMessage> GetMailAsync(
@@ -352,18 +554,118 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         throw new NotImplementedException("GetAttachmentAsync - wird in Karte 3.5 implementiert");
     }
 
-    public Task<PagedResult<MailMessage>> SearchMailsAsync(
+    public async Task<PagedResult<MailMessage>> SearchMailsAsync(
         string query,
         string? folderId = null,
         int top = 25,
         CancellationToken cancellationToken = default)
     {
-        // TODO Karte 3.5: Outlook-InstanteSearch oder AdvancedSearch
-        return Task.FromResult(new PagedResult<MailMessage>
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
         {
-            Value = Array.Empty<MailMessage>(),
-            NextSkip = null,
-        });
+            var slice = new List<MailMessage>(top);
+
+            // Wenn folderId null → rekursiv ueber alle Mail-Ordner durchsuchen
+            if (folderId is null)
+            {
+                dynamic root = GetMapiNamespace();
+                try
+                {
+                    CollectMatchingMails(root, query, slice, top);
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(root);
+                }
+            }
+            else
+            {
+                dynamic folder = GetFolderByIdOrWellKnownName(folderId);
+                try
+                {
+                    CollectMatchingMails(folder, query, slice, top);
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(folder);
+                }
+            }
+
+            return new PagedResult<MailMessage>
+            {
+                Value = slice,
+                NextSkip = null, // Search liefert keine Pagination (Hard-Cap via top)
+            };
+        }, nameof(SearchMailsAsync));
+    }
+
+    /// <summary>
+    /// Iteriert ueber einen Folder (oder Root) und sammelt Mails, deren
+    /// Subject ODER SenderEmailAddress den Query (case-insensitive) enthaelt.
+    /// Bricht ab, sobald <c>slice.Count == top</c> erreicht ist. Rekursion
+    /// ueber Unterordner. Com-Objekte werden pro Item freigegeben.
+    /// </summary>
+    private static void CollectMatchingMails(dynamic parent, string query, List<MailMessage> slice, int top)
+    {
+        try
+        {
+            dynamic items = parent.Items;
+            try
+            {
+                if (items is not null)
+                {
+                    foreach (var item in items)
+                    {
+                        try
+                        {
+                            if ((int)item.Class != 43) continue; // nur olMail (43) — keine Appointments/Tasks
+                            var subj = TryGetString(item, "Subject") ?? string.Empty;
+                            var sender = TryGetString(item, "SenderEmailAddress") ?? string.Empty;
+                            if (subj.Contains(query, StringComparison.OrdinalIgnoreCase)
+                                || sender.Contains(query, StringComparison.OrdinalIgnoreCase))
+                            {
+                                slice.Add(MapMailItem(item, includeBody: false));
+                                if (slice.Count >= top) return;
+                            }
+                        }
+                        finally
+                        {
+                            Marshal.ReleaseComObject(item);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(items);
+            }
+
+            // Rekursion in Unterordner
+            dynamic subFolders = parent.Folders;
+            try
+            {
+                if (subFolders is not null)
+                {
+                    foreach (var sub in subFolders)
+                    {
+                        try
+                        {
+                            CollectMatchingMails(sub, query, slice, top);
+                            if (slice.Count >= top) return;
+                        }
+                        finally
+                        {
+                            Marshal.ReleaseComObject(sub);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(subFolders);
+            }
+        }
+        catch { /* defensive — Ordner ohne Zugriff ueberspringen */ }
     }
 
     // ===== Mail: Mutationen =====

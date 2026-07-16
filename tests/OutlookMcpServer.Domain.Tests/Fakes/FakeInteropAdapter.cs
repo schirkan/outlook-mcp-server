@@ -107,12 +107,23 @@ public sealed class FakeInteropAdapter : IInteropOutlookAdapter
 
     // ===== Active-Inspector / Selection =====
 
+    public Func<CancellationToken, ActiveItem?>? OnGetActiveItem { get; set; }
+    public Func<SelectionScope, int, CancellationToken, IReadOnlyList<ActiveItem>>? OnGetSelectedItems { get; set; }
+
     public Task<ActiveItem?> GetActiveItemAsync(CancellationToken cancellationToken = default)
-        => Task.FromResult<ActiveItem?>(null);
+    {
+        Calls.Add(nameof(GetActiveItemAsync));
+        if (OnGetActiveItem is not null) return Task.FromResult(OnGetActiveItem(cancellationToken));
+        return Task.FromResult<ActiveItem?>(null);
+    }
 
     public Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
         SelectionScope scope,
         int top = 50,
         CancellationToken cancellationToken = default)
-        => Task.FromResult<IReadOnlyList<ActiveItem>>(Array.Empty<ActiveItem>());
+    {
+        Calls.Add($"{nameof(GetSelectedItemsAsync)}:scope={scope},top={top}");
+        if (OnGetSelectedItems is not null) return Task.FromResult(OnGetSelectedItems(scope, top, cancellationToken));
+        return Task.FromResult<IReadOnlyList<ActiveItem>>(Array.Empty<ActiveItem>());
+    }
 }

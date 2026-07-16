@@ -2,6 +2,7 @@ using OutlookMcpServer.Domain.Abstractions;
 using OutlookMcpServer.Domain.Models.Calendar;
 using OutlookMcpServer.Domain.Models.Common;
 using OutlookMcpServer.Domain.Models.Mail;
+using OutlookMcpServer.Domain.Validation;
 
 namespace OutlookMcpServer.Domain.Tests.Fakes;
 
@@ -200,11 +201,25 @@ public sealed class FakeOutlookService : IOutlookService
 
     // ===== Active-Inspector / Selection (Fakes fuer Tests) =====
 
+    public Func<CancellationToken, ActiveItem?>? OnGetActiveItem { get; set; }
+    public Func<SelectionScope, int, CancellationToken, IReadOnlyList<ActiveItem>>? OnGetSelectedItems { get; set; }
+    private readonly List<ActiveItem> _seededSelectedItems = new();
+    private ActiveItem? _seededActiveItem;
+
+    public void SeedActiveItem(ActiveItem item) => _seededActiveItem = item;
+    public void SeedSelectedItems(IEnumerable<ActiveItem> items)
+    {
+        _seededSelectedItems.Clear();
+        _seededSelectedItems.AddRange(items);
+    }
+    public void ClearSelectedItems() => _seededSelectedItems.Clear();
+
     public Task<ActiveItem?> GetActiveItemAsync(CancellationToken cancellationToken = default)
     {
         Calls.Add(nameof(GetActiveItemAsync));
-        // Default: kein Inspector offen (Tests koennen via SeedActiveMail/SeedActiveEvent ueberschreiben)
-        return Task.FromResult<ActiveItem?>(null);
+        ThrowIfInjected();
+        if (OnGetActiveItem is not null) return Task.FromResult(OnGetActiveItem(cancellationToken));
+        return Task.FromResult<ActiveItem?>(_seededActiveItem);
     }
 
     public Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
@@ -213,7 +228,26 @@ public sealed class FakeOutlookService : IOutlookService
         CancellationToken cancellationToken = default)
     {
         Calls.Add($"{nameof(GetSelectedItemsAsync)}:scope={scope},top={top}");
-        return Task.FromResult<IReadOnlyList<ActiveItem>>(Array.Empty<ActiveItem>());
+        ThrowIfInjected();
+
+        // Validation (mimics OutlookService-Validation in [1,250])
+        ValidationHelpers.ValidateRange(top, 1, 250, nameof(top));
+
+        // Quelle: Callback (Override) oder seeded items
+        IReadOnlyList<ActiveItem> source = OnGetSelectedItems is not null
+            ? OnGetSelectedItems(scope, top, cancellationToken)
+            : _seededSelectedItems.ToList();
+
+        // Scope-Filter (mimics OutlookInteropAdapter Class-Dispatch + Filter)
+        IEnumerable<ActiveItem> filtered = scope switch
+        {
+            SelectionScope.Mail => source.Where(i => i is ActiveMail),
+            SelectionScope.Calendar => source.Where(i => i is ActiveEvent),
+            _ => source,
+        };
+
+        // Top-Cap (mimics OutlookInteropAdapter .Take(top))
+        return Task.FromResult<IReadOnlyList<ActiveItem>>(filtered.Take(top).ToList());
     }
 
     private void ThrowIfInjected()

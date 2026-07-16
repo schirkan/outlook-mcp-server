@@ -186,9 +186,129 @@ Edit `~/.continue/config.json`:
 }
 ```
 
+### Cursor
+
+Edit `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (per-project):
+
+```json
+{
+  "mcpServers": {
+    "outlook": {
+      "command": "C:\\Program Files\\Outlook MCP Server\\OutlookMcpServer.exe",
+      "args": [],
+      "env": {
+        "OUTLOOKMCPSERVER__OUTLOOK__ALLOWSEND": "true"
+      }
+    }
+  }
+}
+```
+
+In Cursor, the `outlook` MCP server is then available in Composer (Cmd+I) and in chat via `@outlook`.
+
 ### Tool allowlists
 
 The `autoApprove` array in Cline (or analogous setting in other clients) controls which tools can be called without explicit user confirmation. **Always review carefully before allowing `send_mail`, `delete_mail`, `delete_event`**.
+
+## Example Tool Calls
+
+The server speaks MCP/JSON-RPC 2.0 over stdio (one JSON object per line). These are real payloads you can adapt when building custom MCP clients, debugging in stdio mode, or writing integration tests against the contract.
+
+### List unread inbox mails
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "list_mails",
+    "arguments": {
+      "folder": "inbox",
+      "filter": "isRead eq false",
+      "top": 10
+    }
+  }
+}
+```
+
+Response (abbreviated):
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "[{\"id\":\"AAMkAGI2...\",\"subject\":\"Weekly Status\",\"from\":{\"name\":\"Alice\",\"address\":\"alice@example.com\"},\"receivedDateTime\":\"2026-07-25T09:12:00Z\",\"isRead\":false}]"
+      }
+    ]
+  }
+}
+```
+
+### Send a mail
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "send_mail",
+    "arguments": {
+      "to": ["alice@example.com"],
+      "subject": "Weekly Status",
+      "bodyText": "Hi Alice,\n\nAttached is this week's status report.\n\nBest,\nBob"
+    }
+  }
+}
+```
+
+### Create a calendar event with attendees
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "create_event",
+    "arguments": {
+      "subject": "Sprint Review",
+      "start": "2026-07-25T14:00:00",
+      "end": "2026-07-25T15:00:00",
+      "timeZone": "Europe/Berlin",
+      "location": "Room 4.1",
+      "attendees": [
+        { "email": "alice@example.com", "type": "required" },
+        { "email": "bob@example.com",   "type": "optional" }
+      ]
+    }
+  }
+}
+```
+
+### HTTP/SSE loopback example
+
+For custom clients that prefer HTTP over stdio, configure the server with `Transport: "http"` and POST a JSON-RPC request to the SSE endpoint:
+
+```bash
+curl -N -H "Content-Type: application/json" \
+     -H "Accept: text/event-stream" \
+     -X POST http://127.0.0.1:51204/mcp \
+     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+The server returns Server-Sent Events with `data: {...}\n\n` per event.
 
 ## Architecture
 

@@ -47,7 +47,6 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         {
             if (_outlookApp is not null) return _outlookApp;
 
-            // Try active first
             try
             {
                 _outlookApp = GetOrStartOutlookApplication();
@@ -61,42 +60,67 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                         ErrorCode.OutlookNotRunning,
                         "Outlook laeuft nicht und AutoStartOutlook ist deaktiviert");
                 }
-                _logger.LogInformation("Starte outlook.exe...");
-                var psi = new ProcessStartInfo("outlook.exe") { UseShellExecute = true };
-                Process.Start(psi);
-
-                var deadline = DateTime.UtcNow.AddSeconds(_options.Outlook.StartupTimeoutSeconds);
-                Exception? lastEx = null;
-                while (DateTime.UtcNow < deadline)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    try
-                    {
-                        _outlookApp = GetOrStartOutlookApplication();
-                        break;
-                    }
-                    catch (COMException ex)
-                    {
-                        lastEx = ex;
-                        await Task.Delay(500, ct);
-                    }
-                }
-                if (_outlookApp is null)
-                {
-                    throw new OutlookServiceException(
-                        ErrorCode.OutlookNotRunning,
-                        $"Outlook konnte nicht innerhalb von {_options.Outlook.StartupTimeoutSeconds}s gestartet werden",
-                        lastEx);
-                }
+                StartOutlookExe();
+                await WaitForOutlookReadyAsync(_options.Outlook.StartupTimeoutSeconds, ct);
             }
 
-            _mapiNamespace = _outlookApp!.GetNamespace("MAPI");
-            return _outlookApp;
+            InitializeMapiNamespace();
+            return _outlookApp!;
         }
         finally
         {
             _comLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Startet outlook.exe (UseShellExecute=true, kein Window-Style gesetzt).
+    /// Wird nur aufgerufen, wenn eine aktive Outlook-Application nicht gefunden
+    /// wurde UND AutoStartOutlook aktiviert ist.
+    /// </summary>
+    private void StartOutlookExe()
+    {
+        _logger.LogInformation("Starte outlook.exe...");
+        var psi = new ProcessStartInfo("outlook.exe") { UseShellExecute = true };
+        Process.Start(psi);
+    }
+
+    /// <summary>
+    /// Pollt bis zu <paramref name="timeoutSeconds"/> lang (500ms-Intervall) auf
+    /// eine aktive Outlook-Application. Wirft OutlookServiceException(OutlookNotRunning)
+    /// wenn der Timeout erreicht wird.
+    /// </summary>
+    private async Task WaitForOutlookReadyAsync(int timeoutSeconds, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
+        Exception? lastEx = null;
+        while (DateTime.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                _outlookApp = GetOrStartOutlookApplication();
+                return;
+            }
+            catch (COMException ex)
+            {
+                lastEx = ex;
+                await Task.Delay(500, ct);
+            }
+        }
+        throw new OutlookServiceException(
+            ErrorCode.OutlookNotRunning,
+            $"Outlook konnte nicht innerhalb von {timeoutSeconds}s gestartet werden",
+            lastEx);
+    }
+
+    /// <summary>
+    /// Initialisiert _mapiNamespace aus der Outlook-Application. Setzt
+    /// voraus, dass _outlookApp bereits gesetzt ist.
+    /// </summary>
+    private void InitializeMapiNamespace()
+    {
+        _mapiNamespace = _outlookApp!.GetNamespace("MAPI");
     }
 
     private dynamic GetMapiNamespace()
@@ -173,15 +197,50 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     /// ListMails-Use-Case, wo BodyPreview reicht und das Voll-Body-HTML teuer ist).
     /// ComException in optionalen Properties wird defensiv mit Fallback-Wert gefangen.
     /// </summary>
+    // ===== Mail Mapping Helper Records =====
+    private record MailRecipients(IReadOnlyList<Recipient> To, IReadOnlyList<Recipient> Cc, IReadOnlyList<Recipient> Bcc);
+    private record MailDates(DateTimeOffset? Sent, DateTimeOffset? Received);
+    private record MailMetadata(bool HasAttachments, bool IsUnread, Importance Importance, List<string> Categories);
+
     private static MailMessage MapMailItem(dynamic mail, bool includeBody)
     {
         var entryId = (string)mail.EntryID;
-        string? convId = TryGetString(mail, "ConversationID");
-        string? subject = TryGetString(mail, "Subject");
-        string? bodyPreview = TryGetString(mail, "BodyPreview");
 
-        ItemBody? body = null;
-        if (includeBody)
+        var body = TryMapMailBody(mail, includeBody);
+        var from = TryMapMailFrom(mail);
+        var recipients = TryMapMailRecipients(mail);
+        var dates = TryMapMailDates(mail);
+        var meta = TryMapMailMetadata(mail);
+
+        return new MailMessage
+        {
+            Id = entryId,
+            ConversationId = TryGetString(mail, "ConversationID"),
+            Subject = TryGetString(mail, "Subject"),
+            BodyPreview = TryGetString(mail, "BodyPreview"),
+            Body = body,
+            From = from,
+            ToRecipients = recipients.To,
+            CcRecipients = recipients.Cc,
+            BccRecipients = recipients.Bcc,
+            SentDateTime = dates.Sent,
+            ReceivedDateTime = dates.Received,
+            HasAttachments = meta.HasAttachments,
+            Importance = meta.Importance,
+            IsRead = !meta.IsUnread,
+            Categories = meta.Categories,
+        };
+    }
+
+    /// <summary>
+    /// Liest den Mail-Body (Text oder HTML). Gibt null zurueck, wenn
+    /// <paramref name="includeBody"/>=false (ListMails-Use-Case).
+    /// BodyFormat MUSS vor Body/HTMLBody gelesen werden.
+    /// </summary>
+    private static ItemBody? TryMapMailBody(dynamic mail, bool includeBody)
+    {
+        if (!includeBody) return null;
+        try
         {
             string text = TryGetString(mail, "Body") ?? string.Empty;
             string html = TryGetString(mail, "HTMLBody") ?? string.Empty;
@@ -189,42 +248,62 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             try { fmt = (int)mail.BodyFormat; } catch { }
             if (fmt == 2 && !string.IsNullOrEmpty(html))
             {
-                body = new ItemBody { ContentType = ItemBodyType.Html, Content = html };
+                return new ItemBody { ContentType = ItemBodyType.Html, Content = html };
             }
-            else
-            {
-                body = new ItemBody { ContentType = ItemBodyType.Text, Content = text };
-            }
+            return new ItemBody { ContentType = ItemBodyType.Text, Content = text };
         }
+        catch { }
+        return null;
+    }
 
-        Recipient? from = null;
+    /// <summary>
+    /// Liest den Sender (Name + SMTP-Adresse). Gibt null zurueck, wenn
+    /// Sender leer oder nicht lesbar.
+    /// </summary>
+    private static Recipient? TryMapMailFrom(dynamic mail)
+    {
         try
         {
             var senderName = TryGetString(mail, "SenderName");
             var senderAddress = TryGetString(mail, "SenderEmailAddress");
             if (mail.Sender is not null && !string.IsNullOrEmpty(senderAddress))
             {
-                from = new Recipient
+                return new Recipient
                 {
                     EmailAddress = new EmailAddress { Name = senderName, Address = senderAddress },
                 };
             }
         }
         catch { }
+        return null;
+    }
 
-        var toRecipients = MapRecipients(TryGetDynamic(mail, "To"));
-        var ccRecipients = MapRecipients(TryGetDynamic(mail, "CC"));
-        var bccRecipients = MapRecipients(TryGetDynamic(mail, "BCC"));
+    private static MailRecipients TryMapMailRecipients(dynamic mail)
+    {
+        return new MailRecipients(
+            MapRecipients(TryGetDynamic(mail, "To")),
+            MapRecipients(TryGetDynamic(mail, "CC")),
+            MapRecipients(TryGetDynamic(mail, "BCC")));
+    }
 
+    private static MailDates TryMapMailDates(dynamic mail)
+    {
         DateTimeOffset? sent = null;
         DateTimeOffset? received = null;
         try { sent = (DateTimeOffset)mail.SentOn; } catch { }
         try { received = (DateTimeOffset)mail.ReceivedTime; } catch { }
+        return new MailDates(sent, received);
+    }
 
+    /// <summary>
+    /// Liest HasAttachments, IsUnread (Outlook "UnRead" invertiert zu DTO "IsRead"),
+    /// Importance und Categories in einem Rutsch.
+    /// </summary>
+    private static MailMetadata TryMapMailMetadata(dynamic mail)
+    {
         bool hasAttachments = false;
         try { hasAttachments = (int)mail.Attachments.Count > 0; } catch { }
 
-        // Outlook: UnRead = true heisst "ungelesen" → DTO IsRead = !UnRead
         bool isUnread = false;
         try { isUnread = (bool)mail.UnRead; } catch { }
 
@@ -243,24 +322,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         }
         catch { }
 
-        return new MailMessage
-        {
-            Id = entryId,
-            ConversationId = convId,
-            Subject = subject,
-            BodyPreview = bodyPreview,
-            Body = body,
-            From = from,
-            ToRecipients = toRecipients,
-            CcRecipients = ccRecipients,
-            BccRecipients = bccRecipients,
-            SentDateTime = sent,
-            ReceivedDateTime = received,
-            HasAttachments = hasAttachments,
-            Importance = importance,
-            IsRead = !isUnread,
-            Categories = categories,
-        };
+        return new MailMetadata(hasAttachments, isUnread, importance, categories);
     }
 
     /// <summary>
@@ -735,63 +797,77 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     {
         try
         {
-            dynamic items = parent.Items;
-            try
-            {
-                if (items is not null)
-                {
-                    foreach (var item in items)
-                    {
-                        try
-                        {
-                            if ((int)item.Class != 43) continue; // nur olMail (43) — keine Appointments/Tasks
-                            var subj = TryGetString(item, "Subject") ?? string.Empty;
-                            var sender = TryGetString(item, "SenderEmailAddress") ?? string.Empty;
-                            if (subj.Contains(query, StringComparison.OrdinalIgnoreCase)
-                                || sender.Contains(query, StringComparison.OrdinalIgnoreCase))
-                            {
-                                slice.Add(MapMailItem(item, includeBody: false));
-                                if (slice.Count >= top) return;
-                            }
-                        }
-                        finally
-                        {
-                            Marshal.ReleaseComObject(item);
-                        }
-                    }
-                }
-            }
-            finally
-            {
-                Marshal.ReleaseComObject(items);
-            }
-
-            // Rekursion in Unterordner
-            dynamic subFolders = parent.Folders;
-            try
-            {
-                if (subFolders is not null)
-                {
-                    foreach (var sub in subFolders)
-                    {
-                        try
-                        {
-                            CollectMatchingMails(sub, query, slice, top);
-                            if (slice.Count >= top) return;
-                        }
-                        finally
-                        {
-                            Marshal.ReleaseComObject(sub);
-                        }
-                    }
-                }
-            }
-            finally
-            {
-                Marshal.ReleaseComObject(subFolders);
-            }
+            CollectMatchingMailsFromItems(parent, query, slice, top);
+            if (slice.Count >= top) return;
+            CollectMatchingMailsFromSubfolders(parent, query, slice, top);
         }
         catch { /* defensive — Ordner ohne Zugriff ueberspringen */ }
+    }
+
+    /// <summary>
+    /// Iteriert die Items des Folders und sammelt Mails, deren Subject oder
+    /// SenderEmailAddress den Query (case-insensitive) enthalten. Bricht ab,
+    /// sobald slice.Count >= top.
+    /// </summary>
+    private static void CollectMatchingMailsFromItems(dynamic parent, string query, List<MailMessage> slice, int top)
+    {
+        dynamic items = parent.Items;
+        try
+        {
+            if (items is null) return;
+            foreach (var item in items)
+            {
+                try
+                {
+                    if ((int)item.Class != 43) continue; // nur olMail (43) — keine Appointments/Tasks
+                    var subj = TryGetString(item, "Subject") ?? string.Empty;
+                    var sender = TryGetString(item, "SenderEmailAddress") ?? string.Empty;
+                    if (subj.Contains(query, StringComparison.OrdinalIgnoreCase)
+                        || sender.Contains(query, StringComparison.OrdinalIgnoreCase))
+                    {
+                        slice.Add(MapMailItem(item, includeBody: false));
+                        if (slice.Count >= top) return;
+                    }
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(item);
+                }
+            }
+        }
+        finally
+        {
+            Marshal.ReleaseComObject(items);
+        }
+    }
+
+    /// <summary>
+    /// Rekursion in Unterordner. Bricht ab, sobald slice.Count >= top
+    /// (Abbruch-Signal wird ueber den return propagierenden Aufrufer geprueft).
+    /// </summary>
+    private static void CollectMatchingMailsFromSubfolders(dynamic parent, string query, List<MailMessage> slice, int top)
+    {
+        dynamic subFolders = parent.Folders;
+        try
+        {
+            if (subFolders is null) return;
+            foreach (var sub in subFolders)
+            {
+                try
+                {
+                    CollectMatchingMails(sub, query, slice, top);
+                    if (slice.Count >= top) return;
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(sub);
+                }
+            }
+        }
+        finally
+        {
+            Marshal.ReleaseComObject(subFolders);
+        }
     }
 
     // ===== Mail: Mutationen =====
@@ -858,64 +934,14 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     /// </summary>
     private dynamic BuildMailItemFromRequest(SendMailRequest request)
     {
-        if (_outlookApp is null || _mapiNamespace is null)
-        {
-            throw new OutlookServiceException(
-                ErrorCode.InternalError,
-                "Outlook-Application nicht initialisiert (GetOutlookApplicationAsync zuerst aufrufen)");
-        }
+        EnsureOutlookInitialized();
 
         dynamic? sourceItem = null;
         dynamic? mail = null;
         try
         {
-            if (!string.IsNullOrEmpty(request.ForwardFromId))
-            {
-                sourceItem = _mapiNamespace.GetItemFromID(request.ForwardFromId, Type.Missing);
-                mail = sourceItem.Forward();
-            }
-            else if (!string.IsNullOrEmpty(request.ReplyToId))
-            {
-                sourceItem = _mapiNamespace.GetItemFromID(request.ReplyToId, Type.Missing);
-                mail = request.ReplyAll ? sourceItem.ReplyAll() : sourceItem.Reply();
-            }
-            else
-            {
-                // 0 = OlItemType.olMailItem
-                mail = _outlookApp.CreateItem(0);
-            }
-
-            // Subject nur bei neuer Mail setzen — Outlook generiert Subject
-            // bei Reply/Forward (inkl. "Re:" / "Fwd:" Prefix).
-            if (sourceItem is null && !string.IsNullOrEmpty(request.Subject))
-            {
-                mail.Subject = request.Subject;
-            }
-
-            // Empfaenger (Outlook-Syntax: Semikolon-getrennt)
-            if (request.To.Count > 0) mail.To = string.Join("; ", request.To);
-            if (request.Cc.Count > 0) mail.Cc = string.Join("; ", request.Cc);
-            if (request.Bcc.Count > 0) mail.Bcc = string.Join("; ", request.Bcc);
-
-            // Body (BodyFormat muss vor dem Body-Set gesetzt werden, sonst
-            // rendert Outlook die Inhalte in das falsche Format)
-            var bodyFormat = OlEnumMappings.ToOlBodyFormat(request.Body.ContentType);
-            mail.BodyFormat = bodyFormat;
-            if (bodyFormat == 2 /* OlBodyFormat.olFormatHTML */)
-            {
-                mail.HTMLBody = request.Body.Content;
-            }
-            else
-            {
-                mail.Body = request.Body.Content;
-            }
-
-            // Importance
-            mail.Importance = OlEnumMappings.ToOlImportance(request.Importance);
-
-            // Attachments (Base64 -> Temp-File -> Attachments.Add)
-            AddAttachments(mail, request.Attachments);
-
+            mail = CreateMailItemForRequest(request, out sourceItem);
+            ApplyMailProperties(mail, request, sourceItem);
             return mail;
         }
         catch
@@ -935,6 +961,72 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                 try { Marshal.ReleaseComObject(sourceItem); } catch { }
             }
         }
+    }
+
+    private void EnsureOutlookInitialized()
+    {
+        if (_outlookApp is null || _mapiNamespace is null)
+        {
+            throw new OutlookServiceException(
+                ErrorCode.InternalError,
+                "Outlook-Application nicht initialisiert (GetOutlookApplicationAsync zuerst aufrufen)");
+        }
+    }
+
+    /// <summary>
+    /// Erstellt das Mail-Item gemaess Request: Forward (sourceItem wird geladen),
+    /// Reply / ReplyAll (sourceItem wird geladen), oder neue Mail. sourceItem
+    /// wird via out-Parameter zurueckgegeben, damit das aeussere try/finally
+    /// es sauber releasen kann.
+    /// </summary>
+    private dynamic CreateMailItemForRequest(SendMailRequest request, out dynamic? sourceItem)
+    {
+        sourceItem = null;
+        if (!string.IsNullOrEmpty(request.ForwardFromId))
+        {
+            sourceItem = _mapiNamespace!.GetItemFromID(request.ForwardFromId, Type.Missing);
+            return sourceItem!.Forward();
+        }
+        if (!string.IsNullOrEmpty(request.ReplyToId))
+        {
+            sourceItem = _mapiNamespace!.GetItemFromID(request.ReplyToId, Type.Missing);
+            return request.ReplyAll ? sourceItem!.ReplyAll() : sourceItem!.Reply();
+        }
+        return _outlookApp!.CreateItem(0); // 0 = OlItemType.olMailItem
+    }
+
+    /// <summary>
+    /// Schreibt Subject, To/Cc/Bcc, Body (mit korrekter BodyFormat-Reihenfolge),
+    /// Importance und Attachments in das Mail-Item. Subject wird bei Reply/Forward
+    /// NICHT gesetzt (Outlook generiert "Re:" / "Fwd:" Prefix automatisch).
+    /// </summary>
+    private void ApplyMailProperties(dynamic mail, SendMailRequest request, dynamic? sourceItem)
+    {
+        if (sourceItem is null && !string.IsNullOrEmpty(request.Subject))
+        {
+            mail.Subject = request.Subject;
+        }
+
+        if (request.To.Count > 0) mail.To = string.Join("; ", request.To);
+        if (request.Cc.Count > 0) mail.Cc = string.Join("; ", request.Cc);
+        if (request.Bcc.Count > 0) mail.Bcc = string.Join("; ", request.Bcc);
+
+        // BodyFormat MUSS vor dem Body-Set gesetzt werden, sonst rendert
+        // Outlook die Inhalte in das falsche Format.
+        var bodyFormat = OlEnumMappings.ToOlBodyFormat(request.Body.ContentType);
+        mail.BodyFormat = bodyFormat;
+        if (bodyFormat == 2 /* OlBodyFormat.olFormatHTML */)
+        {
+            mail.HTMLBody = request.Body.Content;
+        }
+        else
+        {
+            mail.Body = request.Body.Content;
+        }
+
+        mail.Importance = OlEnumMappings.ToOlImportance(request.Importance);
+
+        AddAttachments(mail, request.Attachments);
     }
 
     /// <summary>
@@ -2098,51 +2190,64 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         await GetOutlookApplicationAsync(cancellationToken);
         return await RunComAsync(() =>
         {
-            // null ist valides Resultat: kein Inspector offen, oder v1-out-of-scope
-            // Typ (Tasks/Contacts). Wird via TryGetInspector defensiv abgefangen,
-            // sodass kein OutlookServiceException fuer den Normalfall geworfen wird.
+            // null ist valides Resultat: kein Inspector offen oder out-of-scope
+            // Typ (Tasks/Contacts). Wird defensiv abgefangen, damit kein
+            // OutlookServiceException fuer den Normalfall geworfen wird.
             dynamic? inspector = null;
-            try
-            {
-                inspector = _outlookApp!.ActiveInspector();
-            }
-            catch (COMException)
-            {
-                return (ActiveItem?)null;
-            }
-            if (inspector is null) return (ActiveItem?)null;
-
             dynamic? currentItem = null;
-            try { currentItem = inspector.CurrentItem; }
-            catch (COMException)
-            {
-                if (inspector is not null) Marshal.ReleaseComObject(inspector);
-                return (ActiveItem?)null;
-            }
-            if (currentItem is null)
-            {
-                Marshal.ReleaseComObject(inspector);
-                return (ActiveItem?)null;
-            }
-
             try
             {
-                // OlObjectClass: 43=olMail, 26=olAppointment, 48=olTask, 40=olContact, ...
-                int objectClass = 0;
-                try { objectClass = (int)currentItem.Class; } catch { }
-                return objectClass switch
-                {
-                    43 /* olMail */ => (ActiveItem?)new ActiveMail { Item = MapMailItem(currentItem, includeBody: true) },
-                    26 /* olAppointment */ => (ActiveItem?)new ActiveEvent { Item = MapAppointmentItem(currentItem) },
-                    _ => null, // Tasks/Contacts/etc. -> v1.1
-                };
+                inspector = TryGetActiveInspector();
+                if (inspector is null) return (ActiveItem?)null;
+
+                currentItem = TryGetInspectorCurrentItem(inspector);
+                if (currentItem is null) return (ActiveItem?)null;
+
+                return MapActiveItemFromCurrentItem(currentItem);
             }
             finally
             {
-                Marshal.ReleaseComObject(currentItem);
-                Marshal.ReleaseComObject(inspector);
+                if (currentItem is not null) Marshal.ReleaseComObject(currentItem);
+                if (inspector is not null) Marshal.ReleaseComObject(inspector);
             }
         }, nameof(GetActiveItemAsync));
+    }
+
+    /// <summary>
+    /// Holt den ActiveInspector defensiv. Gibt null zurueck, wenn kein
+    /// Inspector offen ist oder eine COMException geworfen wird.
+    /// </summary>
+    private dynamic? TryGetActiveInspector()
+    {
+        try { return _outlookApp!.ActiveInspector(); }
+        catch (COMException) { return null; }
+    }
+
+    /// <summary>
+    /// Holt CurrentItem aus dem Inspector defensiv. Gibt null zurueck, wenn
+    /// keine CurrentItem vorhanden oder COMException.
+    /// </summary>
+    private static dynamic? TryGetInspectorCurrentItem(dynamic inspector)
+    {
+        try { return inspector.CurrentItem; }
+        catch (COMException) { return null; }
+    }
+
+    /// <summary>
+    /// Mappt CurrentItem auf ActiveItem-DTO basierend auf OlObjectClass.
+    /// OlObjectClass: 43=olMail, 26=olAppointment, 48=olTask, 40=olContact, ...
+    /// Tasks/Contacts/etc. -> v1.1: null.
+    /// </summary>
+    private static ActiveItem? MapActiveItemFromCurrentItem(dynamic currentItem)
+    {
+        int objectClass = 0;
+        try { objectClass = (int)currentItem.Class; } catch { }
+        return objectClass switch
+        {
+            43 /* olMail */ => new ActiveMail { Item = MapMailItem(currentItem, includeBody: true) },
+            26 /* olAppointment */ => new ActiveEvent { Item = MapAppointmentItem(currentItem) },
+            _ => null,
+        };
     }
 
     public async Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(

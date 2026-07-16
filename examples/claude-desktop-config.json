@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "outlook": {
+      "command": "C:\\Program Files\\Outlook MCP Server\\OutlookMcpServer.exe",
+      "args": [],
+      "env": {
+        "OUTLOOKMCPSERVER__OUTLOOK__ALLOWSEND": "true",
+        "OUTLOOKMCPSERVER__OUTLOOK__ALLOWDELETE": "true",
+        "OUTLOOKMCPSERVER__OUTLOOK__ALLOWCREATE": "true"
+      }
+    }
+  }
+}

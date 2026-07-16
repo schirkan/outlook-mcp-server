@@ -74,12 +74,14 @@ Vision & Scope: siehe [`specs/VISION.md`](specs/VISION.md).
 - [x] Domain-Schicht (DTOs, `IOutlookService`, `OutlookService` mit Validierung)
 - [x] Interop-Adapter Grundgerüst (COM-Boundary Mail+Calendar, `EnumMappings`, 24 Stubs)
 - [x] Konfiguration + DI + Transport (stdio, `appsettings.json`)
-- [x] MCP-Tools (23 Tools in `MailTools` + `CalendarTools`)
-- [x] Unit-Tests xUnit (35/35 grün, `OutlookMcpServer.Domain.Tests`)
-- [/] **Echte COM-Interop-Impl** (Karte 3.5) — Phasen 1, 2, 3a, 3b, 3c + Docs P7 (`resolveName`) abgeschlossen; ausstehend: Mail-Send, Mail-Move/Copy/Update, Calendar (Appointment-Lookup/Modify), Attendees, ActiveSelection-Tools + Tests
-- [ ] Integration-Tests mit Outlook-Profil (Karte 7)
-- [ ] README erweitern (Build, Konfiguration, Verwendung)
-- [ ] Beispiel-Config + MCP-Client-Setup (Claude Desktop, Cline)
+- [x] MCP-Tools (MailTools + CalendarTools + ActiveSelectionTools = 27 Tools)
+- [x] Unit-Tests xUnit (**47/47 grün**, `OutlookMcpServer.Domain.Tests`) — 35 bestehend + 12 Phase-3h-Tests (Polymorphie / Scope-Filter / Top-Cap / Empty-Selection / Validation / Exception-Propagation)
+- [x] **Echte COM-Interop-Impl** (Karte 3.5) — alle 26 Methoden implementiert (24 Mail/Calendar + 2 Active-Selection), 0 verbleibende `NotImplementedException`
+- [x] **Publish-Profil `minimal.pubxml`** — Self-Contained + Single-File + Trim(partial) + Compression + Embedded-PDB + InvariantGlobalization → 17,7 MB exe
+- [x] **Integration-Tests Projekt-Skelett** (Karte 7) — `tests/OutlookMcpServer.IntegrationTests/` mit SkippableFact + Outlook-DetectOutlook (5s-Task-Wait-Timeout gegen COM-Haenger) + 6 Beispiel-Tests (3 MailFolder + 3 Calendar). Vollständige Test-Suite (send/create/respond/delete mit Cleanup) + lokale Verifikation durch Martin stehen aus.
+- [x] **README erweitert** (Karte 8) — Features v1 / Quick Start (Build/Test/Publish) / Configuration (appsettings.json + Allow*-Flags-Tabelle) / Transport (stdio + HTTP/SSE-Loopback) / MCP-Client-Setup (Claude Desktop, Cline, Continue.dev) / Architecture (3-Layer + ASCII-Diagramm) / Development (Project-Structure + Add-a-new-MCP-Tool-Workflow) / Roadmap / License
+- [/] **Beispiel-Configs `examples/`** (Karte 9) — separate JSON-Files für Copy-Paste (in Bearbeitung)
+- [ ] Manuelle COM-Verifikation gegen echtes Outlook-Profil (Martin) — Karte 7 Acceptance `lokal gruen`
 
 ## Git
 
@@ -93,14 +95,14 @@ Vision & Scope: siehe [`specs/VISION.md`](specs/VISION.md).
 ## Workboard
 
 - **Board-ID:** `outlook-mcp-server`
-- **Stats:** 10 Karten total · 6 done · 1 running · 3 backlog
-- **Laufende Karte:**
-  - `f78b75ed-6f77-439c-abd2-7b03a1d9f371` — Impl: Echte COM-Interop (24 Methoden + Active-Selection) (high)
-- **Backlog:**
-  - `022e0b4e-f07a-499a-904d-4c4a49443871` — Tests: Integration (Outlook-Profil, xUnit, COM-Adapter)
-  - `737dbaa1-f169-4094-af81-a6204ece9052` — Doku: README erweitern (Build, Konfiguration, Verwendung)
-  - `d8753677-91bc-4181-9e39-4c5139d12990` — Doku: Beispiel-Config + MCP-Client-Setup (Claude Desktop, Cline)
-- **Done:** Solution-Scaffold · Domain-Schicht · Interop-Adapter Grundgerüst · Konfiguration + Transport · MCP-Tools · Unit-Tests (35/35 grün)
+- **Stats:** 10 Karten total · 9 done · 1 in_progress · 0 backlog
+- **In Progress:**
+  - `d8753677-91bc-4181-9e39-4c5139d12990` — Doku: Beispiel-Config + MCP-Client-Setup (Claude Desktop, Cline) (low) — README enthält bereits inline-Configs, `examples/` mit separaten JSON-Files in Bearbeitung
+- **Done:**
+  - `f78b75ed-6f77-439c-abd2-7b03a1d9f371` — Impl: Echte COM-Interop (26 Methoden + Active-Selection) (high)
+  - `022e0b4e-f07a-499a-904d-4c4a49443871` — Tests: Integration (Outlook-Profil, xUnit, COM-Adapter) — Skeleton + 6 Beispiel-Tests done, vollständige Test-Suite (send/create/respond/delete mit Cleanup) + manuelle Verifikation durch Martin stehen aus
+  - `737dbaa1-f169-4094-af81-a6204ece9052` — Doku: README erweitert (Build, Konfiguration, Verwendung)
+  - Solution-Scaffold · Domain-Schicht · Interop-Adapter Grundgerüst · Konfiguration + Transport · MCP-Tools · Unit-Tests (**47/47 grün**)
 
 ## Project Files
 

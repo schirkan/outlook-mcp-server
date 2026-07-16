@@ -1,0 +1,29 @@
+{
+  "mcpServers": {
+    "outlook": {
+      "command": "C:\\Program Files\\Outlook MCP Server\\OutlookMcpServer.exe",
+      "args": [],
+      "env": {
+        "OUTLOOKMCPSERVER__OUTLOOK__ALLOWSEND": "true",
+        "OUTLOOKMCPSERVER__OUTLOOK__ALLOWDELETE": "true",
+        "OUTLOOKMCPSERVER__OUTLOOK__ALLOWCREATE": "true"
+      },
+      "disabled": false,
+      "autoApprove": [
+        "list_mail_folders",
+        "get_mail_folder",
+        "list_mails",
+        "get_mail",
+        "get_mail_headers",
+        "list_attachments",
+        "get_attachment",
+        "search_mails",
+        "list_calendars",
+        "get_calendar",
+        "list_events",
+        "get_event",
+        "find_meeting_times"
+      ]
+    }
+  }
+}

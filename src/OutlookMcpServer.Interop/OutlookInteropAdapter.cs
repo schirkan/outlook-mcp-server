@@ -1405,14 +1405,65 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     /// spaetere Phase koennte eine Mapping-Tabelle fuer haeufige Zonen ergaenzen.
     /// </para>
     /// </summary>
+    // ===== Appointment Mapping Helper Records =====
+    // Records statt Tuples, weil C# bei dynamic-Rueckgabe keine
+    // var-Dekonstruktion ableiten kann (CS8133/CS8130).
+    private record AppointmentStartEnd(DateTimeTimeZone? Start, DateTimeTimeZone? End);
+    private record AppointmentLocation(Location? Location, List<Location> Locations);
+    private record AppointmentFlags(Importance Importance, Sensitivity Sensitivity, ShowAs ShowAs, bool IsCancelled);
+    private record AppointmentReminder(bool IsOn, int MinutesBeforeStart);
+    private record AppointmentMetadata(bool HasAttachments, string? ICalUId, DateTimeOffset? Created, DateTimeOffset? Modified, string? ChangeKey, EventType Type);
+
     private static CalendarEvent MapAppointmentItem(dynamic item)
     {
         var entryId = (string)item.EntryID;
-        string? subject = TryGetString(item, "Subject");
-        string? bodyPreview = TryGetString(item, "BodyPreview");
 
-        // Body (BodyFormat MUSS vor Body/HTMLBody gelesen werden)
-        ItemBody? body = null;
+        var body = TryMapAppointmentBody(item);
+        var startEnd = TryMapAppointmentStartEnd(item);
+        var loc = TryMapAppointmentLocation(item);
+        var organizer = TryMapAppointmentOrganizer(item);
+        var attendees = TryMapAppointmentAttendees(item);
+        var flags = TryMapAppointmentFlags(item);
+        var reminder = TryMapAppointmentReminder(item);
+        var categories = TryMapAppointmentCategories(item);
+        var meta = TryMapAppointmentMetadata(item);
+
+        return new CalendarEvent
+        {
+            Id = entryId,
+            Subject = TryGetString(item, "Subject"),
+            BodyPreview = TryGetString(item, "BodyPreview"),
+            Body = body,
+            Start = startEnd.Start,
+            End = startEnd.End,
+            IsAllDay = TryGetAppointmentAllDay(item),
+            Location = loc.Location,
+            Locations = loc.Locations,
+            Organizer = organizer,
+            Attendees = attendees,
+            Importance = flags.Importance,
+            Sensitivity = flags.Sensitivity,
+            ShowAs = flags.ShowAs,
+            IsCancelled = flags.IsCancelled,
+            IsReminderOn = reminder.IsOn,
+            ReminderMinutesBeforeStart = reminder.MinutesBeforeStart,
+            Categories = categories,
+            HasAttachments = meta.HasAttachments,
+            Recurrence = null, // Recurrence-Mapping ist komplex (RecurrencePattern mit Type/Interval/DaysOfWeek/etc.); v1 Phase-3f auf null gesetzt
+            ICalUId = meta.ICalUId,
+            CreatedDateTime = meta.Created,
+            LastModifiedDateTime = meta.Modified,
+            ChangeKey = meta.ChangeKey,
+            Type = meta.Type,
+        };
+    }
+
+    /// <summary>
+    /// Liest den Body (Text oder HTML) aus einem Outlook-Appointment-Item.
+    /// BodyFormat MUSS vor Body/HTMLBody gelesen werden.
+    /// </summary>
+    private static ItemBody? TryMapAppointmentBody(dynamic item)
+    {
         try
         {
             string bodyText = TryGetString(item, "Body") ?? string.Empty;
@@ -1421,16 +1472,23 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             try { fmt = (int)item.BodyFormat; } catch { }
             if (fmt == 2 && !string.IsNullOrEmpty(bodyHtml))
             {
-                body = new ItemBody { ContentType = ItemBodyType.Html, Content = bodyHtml };
+                return new ItemBody { ContentType = ItemBodyType.Html, Content = bodyHtml };
             }
-            else if (!string.IsNullOrEmpty(bodyText))
+            if (!string.IsNullOrEmpty(bodyText))
             {
-                body = new ItemBody { ContentType = ItemBodyType.Text, Content = bodyText };
+                return new ItemBody { ContentType = ItemBodyType.Text, Content = bodyText };
             }
         }
         catch { }
+        return null;
+    }
 
-        // Start/End (Outlook gibt lokale Zeit des Kalenders; tz als Windows-ID)
+    /// <summary>
+    /// Liest Start und Ende als DateTimeTimeZone. Outlook liefert nur Windows-TZ-IDs;
+    /// das ist eine bekannte Begrenzung des COM-APIs.
+    /// </summary>
+    private static AppointmentStartEnd TryMapAppointmentStartEnd(dynamic item)
+    {
         DateTimeTimeZone? startDttz = null;
         DateTimeTimeZone? endDttz = null;
         try
@@ -1455,26 +1513,41 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             };
         }
         catch { }
+        return new AppointmentStartEnd(startDttz, endDttz);
+    }
 
-        bool isAllDay = false;
-        try { isAllDay = (bool)item.AllDayEvent; } catch { }
+    private static bool TryGetAppointmentAllDay(dynamic item)
+    {
+        try { return (bool)item.AllDayEvent; } catch { return false; }
+    }
 
-        // Location
-        Location? location = null;
+    /// <summary>
+    /// Liest den Ort: ein einzelnes DisplayName-Feld, gemappt auf Location
+    /// (Single) und Locations (Collection).
+    /// </summary>
+    private static AppointmentLocation TryMapAppointmentLocation(dynamic item)
+    {
         var locations = new List<Location>();
         try
         {
             var locName = TryGetString(item, "Location");
             if (!string.IsNullOrEmpty(locName))
             {
-                location = new Location { DisplayName = locName };
-                locations.Add(location);
+                var loc = new Location { DisplayName = locName };
+                locations.Add(loc);
+                return new AppointmentLocation(loc, locations);
             }
         }
         catch { }
+        return new AppointmentLocation(null, locations);
+    }
 
-        // Organizer
-        Organizer? organizer = null;
+    /// <summary>
+    /// Liest den Organizer (Name + SMTP-Adresse). Gibt null zurueck, wenn keine
+    /// Adresse vorhanden oder Organizer nicht lesbar.
+    /// </summary>
+    private static Organizer? TryMapAppointmentOrganizer(dynamic item)
+    {
         try
         {
             dynamic org = item.Organizer;
@@ -1486,7 +1559,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                     var orgAddr = TryGetString(org, "Address");
                     if (!string.IsNullOrEmpty(orgAddr))
                     {
-                        organizer = new Organizer
+                        return new Organizer
                         {
                             EmailAddress = new EmailAddress { Name = orgName, Address = orgAddr },
                         };
@@ -1496,8 +1569,16 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             }
         }
         catch { }
+        return null;
+    }
 
-        // Attendees
+    /// <summary>
+    /// Liest alle Attendees inkl. Response-Status (Accepted/Tentative/Declined)
+    /// und Type (Required/Optional/Resource). OlRecipientType: 1=olRequired,
+    /// 2=olOptional, 3=olResource.
+    /// </summary>
+    private static List<Attendee> TryMapAppointmentAttendees(dynamic item)
+    {
         var attendees = new List<Attendee>();
         try
         {
@@ -1513,7 +1594,6 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                     try { responseStatus = (int)att.MeetingResponseStatus; } catch { }
                     int typeRaw = 0;
                     try { typeRaw = (int)att.Type; } catch { }
-                    // OlRecipientType: 1=olRequired, 2=olOptional, 3=olResource
                     var attType = typeRaw switch
                     {
                         2 => AttendeeType.Optional,
@@ -1532,8 +1612,16 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             }
         }
         catch { }
+        return attendees;
+    }
 
-        // Importance / Sensitivity / ShowAs
+    /// <summary>
+    /// Liest Importance / Sensitivity / ShowAs / Cancelled-Status.
+    /// MeetingStatus: 0=olMeeting, 1=olMeetingReceived, 2=olMeetingCanceled,
+    /// 3=olMeetingReceivedAndCanceled.
+    /// </summary>
+    private static AppointmentFlags TryMapAppointmentFlags(dynamic item)
+    {
         var importance = Importance.Normal;
         try { importance = OlEnumMappings.ToImportance((int)item.Importance); } catch { }
         var sensitivity = Sensitivity.Normal;
@@ -1541,16 +1629,29 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         var showAs = ShowAs.Busy;
         try { showAs = OlEnumMappings.ToShowAs((int)item.BusyStatus); } catch { }
 
-        // MeetingStatus: 0=olMeeting, 1=olMeetingReceived, 2=olMeetingCanceled, 3=olMeetingReceivedAndCanceled
         bool isCancelled = false;
-        try { isCancelled = (int)item.MeetingStatus == 2 /* olMeetingCanceled */ || (int)item.MeetingStatus == 3; } catch { }
+        try
+        {
+            var status = (int)item.MeetingStatus;
+            // olMeetingCanceled (2) und olMeetingReceivedAndCanceled (3)
+            isCancelled = status == 2 || status == 3;
+        }
+        catch { }
 
-        bool isReminderOn = false;
-        int reminderMinutes = 0;
-        try { isReminderOn = (bool)item.ReminderSet; } catch { }
-        try { reminderMinutes = (int)item.ReminderMinutesBeforeStart; } catch { }
+        return new AppointmentFlags(importance, sensitivity, showAs, isCancelled);
+    }
 
-        // Categories
+    private static AppointmentReminder TryMapAppointmentReminder(dynamic item)
+    {
+        bool isOn = false;
+        try { isOn = (bool)item.ReminderSet; } catch { }
+        int minutes = 0;
+        try { minutes = (int)item.ReminderMinutesBeforeStart; } catch { }
+        return new AppointmentReminder(isOn, minutes);
+    }
+
+    private static List<string> TryMapAppointmentCategories(dynamic item)
+    {
         var categories = new List<string>();
         try
         {
@@ -1564,7 +1665,15 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             }
         }
         catch { }
+        return categories;
+    }
 
+    /// <summary>
+    /// Liest Attachment-Flag, iCalUId (GlobalAppointmentID), Erstell-/Aenderungs-
+    /// Zeitstempel, ChangeKey und Event-Type (SingleInstance vs. SeriesMaster).
+    /// </summary>
+    private static AppointmentMetadata TryMapAppointmentMetadata(dynamic item)
+    {
         bool hasAttachments = false;
         try { hasAttachments = (int)item.Attachments.Count > 0; } catch { }
 
@@ -1588,34 +1697,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         }
         catch { }
 
-        return new CalendarEvent
-        {
-            Id = entryId,
-            Subject = subject,
-            BodyPreview = bodyPreview,
-            Body = body,
-            Start = startDttz,
-            End = endDttz,
-            IsAllDay = isAllDay,
-            Location = location,
-            Locations = locations,
-            Organizer = organizer,
-            Attendees = attendees,
-            Importance = importance,
-            Sensitivity = sensitivity,
-            ShowAs = showAs,
-            IsCancelled = isCancelled,
-            IsReminderOn = isReminderOn,
-            ReminderMinutesBeforeStart = reminderMinutes,
-            Categories = categories,
-            HasAttachments = hasAttachments,
-            Recurrence = null, // Recurrence-Mapping ist komplex (RecurrencePattern mit Type/Interval/DaysOfWeek/etc.); v1 Phase-3f auf null gesetzt
-            ICalUId = iCalUId,
-            CreatedDateTime = created,
-            LastModifiedDateTime = modified,
-            ChangeKey = changeKey,
-            Type = type,
-        };
+        return new AppointmentMetadata(hasAttachments, iCalUId, created, modified, changeKey, type);
     }
 
     /// <summary>

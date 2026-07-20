@@ -97,20 +97,20 @@ Vision & Scope: siehe [`specs/VISION.md`](specs/VISION.md).
 
 Zwei separate Workflows in `.github/workflows/`:
 
-- **CI** (`.github/workflows/ci.yml`, Commit `e727a69`)
+- **CI** (`.github/workflows/ci.yml`, Commits `e727a69` + `5bafc3e` fuer Cache-Fix)
   - Trigger: `push` + `pull_request` auf `main`
   - Runner: `windows-latest` (COM-Interop = Windows-only)
   - .NET SDK: aus `global.json` (8.0.x, rollForward latestFeature)
-  - Steps: checkout → setup-dotnet (NuGet-Cache) → restore → build (Release) → test Domain.Tests → test IntegrationTests
+  - Steps: checkout → setup-dotnet (**kein** NuGet-Cache, siehe "Cache-Status" unten) → restore → build (Release) → test Domain.Tests → test IntegrationTests
   - IntegrationTests skippen sauber via `OutlookIntegrationTestBase.DetectOutlook` (5s-Task-Wait-Timeout) wenn kein Outlook-Profil vorhanden
   - Timeout 20 Min, `concurrency.cancel-in-progress` (spart CI-Minuten)
   - Publish laeuft NICHT in CI (zu teuer, separate Datei)
 
-- **Release** (`.github/workflows/release.yml`)
+- **Release** (`.github/workflows/release.yml`, Commits `6e69e56` + `5bafc3e` fuer Cache-Fix)
   - Trigger: `push` auf Tag-Match `v[0-9]+.[0-9]+.[0-9]+` (z. B. `v1.0.0`, `v1.0.1`, `v2.0.0`)
   - Pre-Release-Tags (z. B. `v1.0.0-rc.1`, `v1.0.0-beta.2`) werden via `prerelease`-Expression auto-markiert
   - Runner: `windows-latest`, .NET SDK aus `global.json`
-  - Steps: checkout (full history) → setup-dotnet → restore → publish mit `minimal.pubxml` (Self-Contained + Single-File + Trim partial + Compression) → Zip → Upload-Artifact → GitHub-Release (mit auto-generierten Notes aus Commits seit letztem Tag)
+  - Steps: checkout (full history) → setup-dotnet (**kein** NuGet-Cache, siehe "Cache-Status" unten) → restore → publish mit `minimal.pubxml` (Self-Contained + Single-File + Trim partial + Compression) → Zip → Upload-Artifact → GitHub-Release (mit auto-generierten Notes aus Commits seit letztem Tag)
   - Permissions: `contents: write` (fuer `gh release create`)
   - Artifact: `outlook-mcp-server-${{ github.ref_name }}.zip` (OutlookMcpServer.exe ~17.7 MB + pdb + aspnetcorev2_inprocess.dll)
 
@@ -129,6 +129,19 @@ Zwei separate Workflows in `.github/workflows/`:
   # Status checken
   gh release list
   ```
+
+- **Pipeline-Status (Live, nach erstem v0.1.0 Release):**
+  - Erste gepublishte GitHub-Release: **[v0.1.0](https://github.com/schirkan/outlook-mcp-server/releases/tag/v0.1.0)** — ausgeloest durch `git push origin v0.1.0` (Tag-Trigger fuer `release.yml`)
+  - Asset: `outlook-mcp-server.zip` (OutlookMcpServer.exe ~17,7 MB Self-Contained Single-File + pdb + aspnetcorev2_inprocess.dll)
+  - Release-Run-Dauer (Run [29724649418](https://github.com/schirkan/outlook-mcp-server/actions/runs/29724649418)): **~116s (1,9 min)** auf windows-latest
+  - CI-Laufzeit (nach Cache-Fix 5bafc3e): **~68s** auf windows-latest
+  - Tag-zu-Release-Zeit gesamt: ~2 min (Tag-Push → GitHub Release published + Asset verfuegbar)
+  - Auto-Update fuer MCP-Clients (Claude Desktop, Cline, Continue.dev, Cursor): aktuell **manuell** — Download pro Release aus GitHub, exe ersetzen. Auto-Update-Mechanik (GitHub-Releases-API pollen, SemVer-Vergleich, Auto-Replace) ist kein v1-Scope, Folge-Schritt.
+
+- **Cache-Status (Bekannte Limitierung):**
+  - Beide Workflows (`ci.yml` + `release.yml`) nutzen **kein** `cache: true` auf `actions/setup-dotnet@v4`. Grund: die Action verlangt eine `packages.lock.json`, die unser Repo (noch) nicht hat — mit `cache: true` wirft die Action "Dependencies lock file is not found", Restore/Build/Tests werden gar nicht erreicht (Fruehausstieg nach ~45s).
+  - **Workaround (Commit 5bafc3e):** `cache: true` entfernt, Inline-Kommentar in beiden Workflow-Files erklaert das Trade-off. NuGet-Restore ohne Cache ist ~10-20s langsamer pro CI-/Release-Lauf, fuer unsere Projektgroesse vernachlaessigbar.
+  - **Saubere Loesung (Roadmap):** Central Package Management (CPM) via `Directory.Packages.props` aktivieren + `<RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>` in jedem csproj setzen + `dotnet restore --use-lock-file` einmal lokal ausfuehren → generiert `packages.lock.json` pro Projekt. Danach kann `cache: true` in beiden Workflows wieder aktiviert werden, ohne die Cache-Key-Findungs-Failure. Folge-Schritt, kein Dringlichkeits-Bedarf.
 
 ## Workboard
 

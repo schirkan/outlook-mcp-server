@@ -58,7 +58,10 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
-          cache: true
+          # cache: true waere nuetzlich, aber actions/setup-dotnet@v4
+          # verlangt packages.lock.json. Release-Runs sind ohnehin selten
+          # (nur bei Tag-Push), NuGet-Restore-Zeit ist hier vernachlaessigbar.
+          # Siehe ci.yml fuer Details.
 
       - name: Restore
         run: dotnet restore

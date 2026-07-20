@@ -56,7 +56,13 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
-          cache: true
+          # cache: true ist hier absichtlich NICHT aktiv: actions/setup-dotnet@v4
+          # verlangt eine packages.lock.json, die dieses Repo (noch) nicht hat.
+          # Ohne packages.lock.json wirft die Action einen Fehler
+          # ("Dependencies lock file is not found"), Restore/Build/Tests
+          # werden gar nicht erreicht. NuGet-Cache kann spaeter mit
+          # zentralem Package-Management + packages.lock.json nachgezogen
+          # werden.
 
       - name: Restore
         run: dotnet restore

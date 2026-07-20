@@ -1,0 +1,74 @@
+# GitHub Actions CI for outlook-mcp-server
+#
+# Pipeline:
+#   1. Checkout
+#   2. Setup .NET SDK per global.json (8.0.x, rollForward latestFeature)
+#   3. Restore NuGet packages (cache: true hashes csproj + project.assets.json)
+#   4. Build in Release (no-restore, no rebuild overhead)
+#   5. Domain.Tests  (FakeOutlookService, no Outlook required)
+#   6. IntegrationTests (SkippableFact + DetectOutlook — gracefully skip on
+#      runners without a real Outlook profile; exit code 0 even if all skip)
+#
+# Why Windows?
+#   Outlook COM Interop (Microsoft.Office.Interop.Outlook) is Windows-only.
+#   Domain.Tests target net8.0-windows because they reference OutlookMcpServer
+#   (which is net8.0-windows). Linux/macOS runners could in principle run the
+#   pure-domain logic, but for v1 we keep it simple: one runner everywhere.
+#
+# Why no publish step?
+#   dotnet publish with minimal.pubxml takes ~30-60s on a fresh runner
+#   (Self-Contained + Trim partial + Compression) and emits ~17.7 MB binaries.
+#   Better triggered manually as a release artifact, or in a separate
+#   `release.yml` workflow on tag pushes.
+#
+# Why concurrency.cancel-in-progress?
+#   Pushes to main can stack up. Cancelling an in-progress run for the same
+#   ref saves CI minutes.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build + Test (Windows, .NET ${{ vars.DOTNET_VERSION || '8.0' }})
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    env:
+      DOTNET_NOLOGO: 'true'
+      DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK (per global.json)
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+          cache: true
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build -c Release --no-restore --nologo
+
+      - name: Test Domain.Tests (47 Tests, FakeOutlookService)
+        run: dotnet test tests/OutlookMcpServer.Domain.Tests/OutlookMcpServer.Domain.Tests.csproj -c Release --no-build --no-restore --nologo --verbosity normal
+
+      - name: Test IntegrationTests (SkippableFact, no Outlook required)
+        # IntegrationTests skip themselves cleanly via OutlookIntegrationTestBase.DetectOutlook
+        # when no Outlook profile is registered on the runner (Task.Wait(5s) timeout).
+        # Exit code 0 even if all tests are skipped.
+        run: dotnet test tests/OutlookMcpServer.IntegrationTests/OutlookMcpServer.IntegrationTests.csproj -c Release --no-build --no-restore --nologo --verbosity normal

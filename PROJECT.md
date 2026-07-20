@@ -81,6 +81,7 @@ Vision & Scope: siehe [`specs/VISION.md`](specs/VISION.md).
 - [x] **Integration-Tests Projekt-Skelett** (Karte 7) — `tests/OutlookMcpServer.IntegrationTests/` mit SkippableFact + Outlook-DetectOutlook (5s-Task-Wait-Timeout gegen COM-Haenger) + 6 Beispiel-Tests (3 MailFolder + 3 Calendar). Vollständige Test-Suite (send/create/respond/delete mit Cleanup) + lokale Verifikation durch Martin stehen aus.
 - [x] **README erweitert** (Karte 8) — Features v1 / Quick Start (Build/Test/Publish) / Configuration (appsettings.json + Allow*-Flags-Tabelle) / Transport (stdio + HTTP/SSE-Loopback) / MCP-Client-Setup (Claude Desktop, Cline, Continue.dev) / Architecture (3-Layer + ASCII-Diagramm) / Development (Project-Structure + Add-a-new-MCP-Tool-Workflow) / Roadmap / License
 - [x] **Beispiel-Configs `examples/`** (Karte 9) — separate JSON-Files für Copy-Paste (`claude-desktop-config.json`, `cline-mcp-settings.json`, `appsettings.http.json`, `appsettings.readonly.json` + `examples/README.md`)
+- [x] **CI/CD-Pipeline** (GitHub Actions) — `ci.yml` (Build + Test bei push/PR auf main) + `release.yml` (Tag-Triggered Publish + GitHub Release mit auto-generierten Notes). Windows-Runner wegen COM-Interop.
 - [ ] Manuelle COM-Verifikation gegen echtes Outlook-Profil (Martin) — Karte 7 Acceptance `lokal gruen`
 
 ## Git
@@ -91,6 +92,43 @@ Vision & Scope: siehe [`specs/VISION.md`](specs/VISION.md).
 - **Eingerichtet am:** 2026-07-15
 - **Standard-Branch:** `main`
 - **`.gitignore`-Status:** vorhanden
+
+## CI / CD (GitHub Actions)
+
+Zwei separate Workflows in `.github/workflows/`:
+
+- **CI** (`.github/workflows/ci.yml`, Commit `e727a69`)
+  - Trigger: `push` + `pull_request` auf `main`
+  - Runner: `windows-latest` (COM-Interop = Windows-only)
+  - .NET SDK: aus `global.json` (8.0.x, rollForward latestFeature)
+  - Steps: checkout → setup-dotnet (NuGet-Cache) → restore → build (Release) → test Domain.Tests → test IntegrationTests
+  - IntegrationTests skippen sauber via `OutlookIntegrationTestBase.DetectOutlook` (5s-Task-Wait-Timeout) wenn kein Outlook-Profil vorhanden
+  - Timeout 20 Min, `concurrency.cancel-in-progress` (spart CI-Minuten)
+  - Publish laeuft NICHT in CI (zu teuer, separate Datei)
+
+- **Release** (`.github/workflows/release.yml`)
+  - Trigger: `push` auf Tag-Match `v[0-9]+.[0-9]+.[0-9]+` (z. B. `v1.0.0`, `v1.0.1`, `v2.0.0`)
+  - Pre-Release-Tags (z. B. `v1.0.0-rc.1`, `v1.0.0-beta.2`) werden via `prerelease`-Expression auto-markiert
+  - Runner: `windows-latest`, .NET SDK aus `global.json`
+  - Steps: checkout (full history) → setup-dotnet → restore → publish mit `minimal.pubxml` (Self-Contained + Single-File + Trim partial + Compression) → Zip → Upload-Artifact → GitHub-Release (mit auto-generierten Notes aus Commits seit letztem Tag)
+  - Permissions: `contents: write` (fuer `gh release create`)
+  - Artifact: `outlook-mcp-server-${{ github.ref_name }}.zip` (OutlookMcpServer.exe ~17.7 MB + pdb + aspnetcorev2_inprocess.dll)
+
+- **Workflow manuell triggern** (zum Testen ohne Push):
+  - GitHub UI: `Actions`-Tab → Workflow auswaehlen → `Run workflow`
+  - CLI: `gh workflow run ci.yml` (mit `-F key=value` fuer Inputs, falls vorhanden)
+
+- **Release-Prozess** (lokal):
+  ```bash
+  # Tag erstellen (SemVer + aussagekraeftige Message)
+  git tag -a v1.0.0 -m "v1.0.0 — erste stabile Version"
+
+  # Tag pushen — loest release.yml aus
+  git push origin v1.0.0
+
+  # Status checken
+  gh release list
+  ```
 
 ## Workboard
 

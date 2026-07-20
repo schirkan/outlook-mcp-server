@@ -1,0 +1,92 @@
+# GitHub Actions Release for outlook-mcp-server
+#
+# Pipeline:
+#   1. Checkout (full history for changelog / release notes)
+#   2. Setup .NET SDK (per global.json, NuGet-Cache)
+#   3. Restore
+#   4. Publish with minimal.pubxml (Self-Contained + Single-File + Trim partial + Compression)
+#   5. Verify publish output
+#   6. Zip the publish output
+#   7. Upload as GitHub Actions artifact (besstaendig auch wenn GitHub Release fehlschlaegt)
+#   8. Create a GitHub Release with the zip as a downloadable asset
+#
+# Trigger: push of tags matching v[0-9]+.[0-9]+.[0-9]+ (SemVer with v-prefix).
+# Beispiele:
+#   v1.0.0       -> stables Release
+#   v1.0.1       -> stables Patch-Release
+#   v1.0.0-rc.1  -> Pre-Release (auto-markiert in GitHub UI via "prerelease: ..." Expression)
+#   v2.0.0-beta.3 -> Pre-Release
+#
+# Why a separate workflow (not part of ci.yml)?
+#   - Publish dauert ~30-60s (Self-Contained + Trim) und emittiert ~17.7 MB Binary.
+#   - Publish auf jeden Commit wuerde CI-Minuten ohne Mehrwert verbrauchen.
+#   - Tag-Trigger ermoeglichen bewusste, semver-versionierte Releases.
+#   - Permissions: contents:write fuer softprops/action-gh-release.
+#
+# Why no concurrency.cancel-in-progress?
+#   - Tags sind immutable. Ein Tag = genau ein Release. Re-runs sind manuelle
+#     workflow_dispatch-Trigger, kein Push-Event.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write   # fuer softprops/action-gh-release (sonst 403 beim Release-Erstellen)
+
+jobs:
+  release:
+    name: Publish + GitHub Release
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    env:
+      DOTNET_NOLOGO: 'true'
+      DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for auto-generated release notes
+
+      - name: Setup .NET SDK (per global.json)
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+          cache: true
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Publish (minimal.pubxml, Release, win-x64)
+        run: dotnet publish src/OutlookMcpServer/OutlookMcpServer.csproj -c Release -r win-x64 -p:PublishProfile=src/OutlookMcpServer/Properties/PublishProfiles/minimal.pubxml --nologo
+
+      - name: Verify publish output
+        shell: pwsh
+        run: Get-ChildItem 'src/OutlookMcpServer/bin/Release/net8.0-windows/win-x64/publish/' | Format-Table Name, @{N='SizeMB';E={[math]::Round($_.Length/1MB,2)}} -AutoSize
+
+      - name: Zip publish output
+        shell: pwsh
+        run: Compress-Archive -Path 'src/OutlookMcpServer/bin/Release/net8.0-windows/win-x64/publish/*' -DestinationPath outlook-mcp-server.zip -Force
+
+      - name: Upload release artifact (workflow-level)
+        uses: actions/upload-artifact@v4
+        with:
+          name: outlook-mcp-server-${{ github.ref_name }}
+          path: outlook-mcp-server.zip
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 'Outlook MCP Server ${{ github.ref_name }}'
+          generate_release_notes: true
+          # Tags mit '-' (z. B. v1.0.0-rc.1, v1.0.0-beta.2) als Pre-Release markieren
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: outlook-mcp-server.zip

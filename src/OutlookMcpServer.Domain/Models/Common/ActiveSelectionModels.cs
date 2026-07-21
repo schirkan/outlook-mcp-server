@@ -16,14 +16,18 @@ namespace OutlookMcpServer.Domain.Models.Common;
 [JsonDerivedType(typeof(ActiveEvent), "event")]
 public abstract record ActiveItem
 {
+    // Get-only (kein init) auf der Basisklasse, damit der
+    // System.Text.Json-Source-Generator keine doppelten Initializer
+    // fuer ActiveMail/ActiveEvent emittiert (CS1912 bei Trimming/Publish).
+    // Wert wird ueber den override in den Sub-Typen festgelegt.
     [JsonPropertyName("kind")]
-    public abstract string Kind { get; init; }
+    public abstract string Kind { get; }
 }
 
 /// <summary>ActiveItem-Variante: MailItem in Inspector.</summary>
 public sealed record ActiveMail : ActiveItem
 {
-    public override string Kind { get; init; } = "mail";
+    public override string Kind { get; } = "mail";
 
     [JsonPropertyName("item")]
     public required MailMessage Item { get; init; }
@@ -32,7 +36,7 @@ public sealed record ActiveMail : ActiveItem
 /// <summary>ActiveItem-Variante: AppointmentItem in Inspector.</summary>
 public sealed record ActiveEvent : ActiveItem
 {
-    public override string Kind { get; init; } = "event";
+    public override string Kind { get; } = "event";
 
     [JsonPropertyName("item")]
     public required CalendarEvent Item { get; init; }

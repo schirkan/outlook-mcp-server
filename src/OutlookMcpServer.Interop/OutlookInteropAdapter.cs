@@ -202,11 +202,11 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     private record MailDates(DateTimeOffset? Sent, DateTimeOffset? Received);
     private record MailMetadata(bool HasAttachments, bool IsUnread, Importance Importance, List<string> Categories);
 
-    private static MailMessage MapMailItem(dynamic mail, bool includeBody)
+    private static MailMessage MapMailItem(dynamic mail, bool includeBody, ILogger? logger = null)
     {
         var entryId = (string)mail.EntryID;
 
-        var body = TryMapMailBody(mail, includeBody);
+        var body = TryMapMailBody(mail, includeBody, logger);
         var from = TryMapMailFrom(mail);
         var recipients = TryMapMailRecipients(mail);
         var dates = TryMapMailDates(mail);
@@ -236,23 +236,76 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     /// Liest den Mail-Body (Text oder HTML). Gibt null zurueck, wenn
     /// <paramref name="includeBody"/>=false (ListMails-Use-Case).
     /// BodyFormat MUSS vor Body/HTMLBody gelesen werden.
+    /// <para>
+    /// Falls der Body leer erscheint, wird zusaetzlich BodyPreview geliefert,
+    /// damit der Client wenigstens eine Vorschau bekommt. COM-Fehler beim
+    /// Body-Zugriff werden geloggt (LogMessage wurde zuvor im gesamten
+    /// Code-Pfad stillschweigend geschluckt — das war einer der Hauptgruende
+    /// fuer die spaerliche Body-Ausgabe).
+    /// </para>
     /// </summary>
-    private static ItemBody? TryMapMailBody(dynamic mail, bool includeBody)
+    private static ItemBody? TryMapMailBody(dynamic mail, bool includeBody, ILogger? logger = null)
     {
         if (!includeBody) return null;
         try
         {
-            string text = TryGetString(mail, "Body") ?? string.Empty;
-            string html = TryGetString(mail, "HTMLBody") ?? string.Empty;
+            string text = string.Empty;
+            string html = string.Empty;
+            try { text = (string)mail.Body ?? string.Empty; }
+            catch (COMException bodyEx)
+            {
+                logger?.LogWarning(bodyEx,
+                    "TryMapMailBody: Mail.Body nicht lesbar (HResult=0x{HResult:X8})",
+                    bodyEx.HResult);
+            }
+            catch (Exception bodyEx)
+            {
+                logger?.LogWarning(bodyEx, "TryMapMailBody: Unerwarteter Fehler beim Lesen von Mail.Body");
+            }
+            try { html = (string)mail.HTMLBody ?? string.Empty; }
+            catch (COMException htmlEx)
+            {
+                logger?.LogWarning(htmlEx,
+                    "TryMapMailBody: Mail.HTMLBody nicht lesbar (HResult=0x{HResult:X8})",
+                    htmlEx.HResult);
+            }
+            catch (Exception htmlEx)
+            {
+                logger?.LogWarning(htmlEx, "TryMapMailBody: Unerwarteter Fehler beim Lesen von Mail.HTMLBody");
+            }
             int fmt = 1;
             try { fmt = (int)mail.BodyFormat; } catch { }
             if (fmt == 2 && !string.IsNullOrEmpty(html))
             {
                 return new ItemBody { ContentType = ItemBodyType.Html, Content = html };
             }
-            return new ItemBody { ContentType = ItemBodyType.Text, Content = text };
+            if (!string.IsNullOrEmpty(text))
+            {
+                return new ItemBody { ContentType = ItemBodyType.Text, Content = text };
+            }
+            // Body leer / nicht lesbar → Fallback auf BodyPreview,
+            // damit der Client wenigstens eine Vorschau bekommt.
+            try
+            {
+                var preview = (string?)mail.BodyPreview;
+                if (!string.IsNullOrEmpty(preview))
+                {
+                    logger?.LogInformation(
+                        "TryMapMailBody: Body leer, liefere BodyPreview als Fallback (len={Length})",
+                        preview.Length);
+                    return new ItemBody { ContentType = ItemBodyType.Text, Content = preview };
+                }
+            }
+            catch (Exception previewEx)
+            {
+                logger?.LogWarning(previewEx, "TryMapMailBody: BodyPreview ebenfalls nicht lesbar");
+            }
+            logger?.LogInformation("TryMapMailBody: Mail hat weder Body, HTMLBody noch BodyPreview");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex, "TryMapMailBody: Outer try fehlgeschlagen");
+        }
         return null;
     }
 
@@ -534,37 +587,123 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         CancellationToken cancellationToken = default)
     {
         await GetOutlookApplicationAsync(cancellationToken);
+        _logger.LogInformation(
+            "ListMails START folderId={FolderId} top={Top} skip={Skip} filter={Filter} search={Search}",
+            folderId, top, skip, filter, search);
         return await RunComAsync(() =>
         {
             dynamic folder = GetFolderByIdOrWellKnownName(folderId);
+            string? folderName = null;
+            try { folderName = (string)folder.Name; } catch { /* defensive */ }
+            _logger.LogInformation(
+                "ListMails folder resolved: displayName={FolderName} folderId={FolderId}",
+                folderName, folderId);
             try
             {
                 string combinedFilter = CombineDaslFilters(filter, search);
                 dynamic items = folder.Items;
+                int rawCount = 0;
+                try { rawCount = (int)items.Count; } catch { }
+                _logger.LogInformation(
+                    "ListMails raw item count before Restrict: {RawCount} (folder={FolderName})",
+                    rawCount, folderName);
+
+                // Wir versuchen zunaechst einen Restrict mit dem kombinierten
+                // Filter. Wenn dieser fehlschlaegt (z. B. wegen unsupported
+                // DASL-Property auf einem Exchange-Item oder wegen eines
+                // Sonderzeichens im Such-Query), fallen wir auf eine
+                // unguelfilterte Iteration mit nachtraeglicher In-Memory-Pruefung
+                // zurueck. So bekommen wir zumindest ein Ergebnis, statt eines
+                // generischen Fehlers.
                 try
                 {
                     if (!string.IsNullOrWhiteSpace(combinedFilter))
                     {
                         items = items.Restrict(combinedFilter);
+                        int restrictedCount = (int)items.Count;
+                        _logger.LogInformation(
+                            "ListMails Restrict OK: {Count} items nach Filter (folder={FolderName})",
+                            restrictedCount, folderName);
                     }
+                }
+                catch (COMException restrictEx)
+                {
+                    _logger.LogWarning(restrictEx,
+                        "ListMails Restrict fehlgeschlagen (HResult=0x{HResult:X8}); " +
+                        "Fallback auf ungefilterte Iteration. filter={Filter} search={Search}",
+                        restrictEx.HResult, filter, search);
+                    // Items erneut holen, da Restrict-Fehler den Items-Zustand
+                    // undefiniert hinterlassen kann.
+                    try { Marshal.ReleaseComObject(items); } catch { }
+                    items = folder.Items;
+                }
+                try
+                {
                     items.Sort("[ReceivedTime]", true); // newest first
 
                     int total = (int)items.Count;
                     int start = Math.Min(skip, total);
                     int end = Math.Min(skip + top, total);
                     var slice = new List<MailMessage>(end - start);
+                    int skippedNonMail = 0;
+                    int failedItems = 0;
                     for (int i = start; i < end; i++)
                     {
-                        dynamic item = items.Item(i + 1); // COM-Auflistungen sind 1-basiert
+                        dynamic item;
                         try
                         {
-                            slice.Add(MapMailItem(item, includeBody: false));
+                            // COM-Auflistungen sind 1-basiert
+                            item = items.Item(i + 1);
+                        }
+                        catch (COMException itemEx)
+                        {
+                            failedItems++;
+                            _logger.LogWarning(itemEx,
+                                "ListMails ueberspringe Item-Index {Index} (HResult=0x{HResult:X8}); " +
+                                "Item nicht lesbar im Folder {FolderName}",
+                                i + 1, itemEx.HResult, folderName);
+                            continue;
+                        }
+                        try
+                        {
+                            // Class-Filter: nur olMail (43). Outlook-Ordner koennen
+                            // AppointmentItem (1), TaskItem (2), ContactItem (8),
+                            // PostItem (4), ReportItem (5) u. a. enthalten. Ohne
+                            // diesen Filter schlaegt MapMailItem fehl, sobald ein
+                            // Item eines unerwarteten Typs vorhanden ist.
+                            int itemClass = 0;
+                            try { itemClass = (int)item.Class; } catch { }
+                            if (itemClass != 43)
+                            {
+                                skippedNonMail++;
+                                continue;
+                            }
+                            slice.Add(MapMailItem(item, false, _logger));
+                        }
+                        catch (COMException mapEx)
+                        {
+                            failedItems++;
+                            _logger.LogWarning(mapEx,
+                                "ListMails ueberspringe Mail-Item {Index} (HResult=0x{HResult:X8}); " +
+                                "MapMailItem fehlgeschlagen im Folder {FolderName}",
+                                i + 1, mapEx.HResult, folderName);
+                        }
+                        catch (Exception mapEx)
+                        {
+                            failedItems++;
+                            _logger.LogError(mapEx,
+                                "ListMails unerwarteter Fehler beim Mapping von Item {Index} " +
+                                "im Folder {FolderName}", i + 1, folderName);
                         }
                         finally
                         {
-                            Marshal.ReleaseComObject(item);
+                            try { Marshal.ReleaseComObject(item); } catch { }
                         }
                     }
+                    _logger.LogInformation(
+                        "ListMails DONE folder={FolderName} returned={Returned} skippedNonMail={SkippedNonMail} " +
+                        "failedItems={FailedItems} total={Total} start={Start} end={End}",
+                        folderName, slice.Count, skippedNonMail, failedItems, total, start, end);
                     return new PagedResult<MailMessage>
                     {
                         Value = slice,
@@ -594,7 +733,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             dynamic mail = GetMapiNamespace().GetItemFromID(id, Type.Missing);
             try
             {
-                return MapMailItem(mail, includeBody);
+                return MapMailItem(mail, includeBody, _logger);
             }
             finally
             {
@@ -749,9 +888,16 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         CancellationToken cancellationToken = default)
     {
         await GetOutlookApplicationAsync(cancellationToken);
+        _logger.LogInformation(
+            "SearchMails START query={Query} folderId={FolderId} top={Top}",
+            query, folderId, top);
         return await RunComAsync(() =>
         {
             var slice = new List<MailMessage>(top);
+            int visitedFolders = 0;
+            int skippedFolders = 0;
+            int skippedNonMail = 0;
+            int failedItems = 0;
 
             // Wenn folderId null → rekursiv ueber alle Mail-Ordner durchsuchen
             if (folderId is null)
@@ -759,7 +905,8 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                 dynamic root = GetMapiNamespace();
                 try
                 {
-                    CollectMatchingMails(root, query, slice, top);
+                    CollectMatchingMails(root, query, slice, top,
+                        ref visitedFolders, ref skippedFolders, ref skippedNonMail, ref failedItems);
                 }
                 finally
                 {
@@ -771,13 +918,19 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                 dynamic folder = GetFolderByIdOrWellKnownName(folderId);
                 try
                 {
-                    CollectMatchingMails(folder, query, slice, top);
+                    CollectMatchingMails(folder, query, slice, top,
+                        ref visitedFolders, ref skippedFolders, ref skippedNonMail, ref failedItems);
                 }
                 finally
                 {
                     Marshal.ReleaseComObject(folder);
                 }
             }
+
+            _logger.LogInformation(
+                "SearchMails DONE query={Query} returned={Returned} visitedFolders={Visited} " +
+                "skippedFolders={SkippedFolders} skippedNonMail={SkippedNonMail} failedItems={FailedItems}",
+                query, slice.Count, visitedFolders, skippedFolders, skippedNonMail, failedItems);
 
             return new PagedResult<MailMessage>
             {
@@ -793,15 +946,36 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     /// Bricht ab, sobald <c>slice.Count == top</c> erreicht ist. Rekursion
     /// ueber Unterordner. Com-Objekte werden pro Item freigegeben.
     /// </summary>
-    private static void CollectMatchingMails(dynamic parent, string query, List<MailMessage> slice, int top)
+    private void CollectMatchingMails(
+        dynamic parent,
+        string query,
+        List<MailMessage> slice,
+        int top,
+        ref int visitedFolders,
+        ref int skippedFolders,
+        ref int skippedNonMail,
+        ref int failedItems)
     {
         try
         {
-            CollectMatchingMailsFromItems(parent, query, slice, top);
+            CollectMatchingMailsFromItems(parent, query, slice, top,
+                ref skippedNonMail, ref failedItems);
             if (slice.Count >= top) return;
-            CollectMatchingMailsFromSubfolders(parent, query, slice, top);
+            CollectMatchingMailsFromSubfolders(parent, query, slice, top,
+                ref visitedFolders, ref skippedFolders, ref skippedNonMail, ref failedItems);
         }
-        catch { /* defensive — Ordner ohne Zugriff ueberspringen */ }
+        catch (COMException ex)
+        {
+            skippedFolders++;
+            _logger.LogWarning(ex,
+                "SearchMails ueberspringe Ordner (HResult=0x{HResult:X8}): Zugriff fehlgeschlagen",
+                ex.HResult);
+        }
+        catch (Exception ex)
+        {
+            skippedFolders++;
+            _logger.LogWarning(ex, "SearchMails ueberspringe Ordner: unerwarteter Fehler");
+        }
     }
 
     /// <summary>
@@ -809,7 +983,13 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     /// SenderEmailAddress den Query (case-insensitive) enthalten. Bricht ab,
     /// sobald slice.Count >= top.
     /// </summary>
-    private static void CollectMatchingMailsFromItems(dynamic parent, string query, List<MailMessage> slice, int top)
+    private void CollectMatchingMailsFromItems(
+        dynamic parent,
+        string query,
+        List<MailMessage> slice,
+        int top,
+        ref int skippedNonMail,
+        ref int failedItems)
     {
         dynamic items = parent.Items;
         try
@@ -819,19 +999,51 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             {
                 try
                 {
-                    if ((int)item.Class != 43) continue; // nur olMail (43) — keine Appointments/Tasks
+                    // Class-Filter: nur olMail (43). Outlook-Ordner koennen
+                    // Reports, Appointments, Posts etc. enthalten.
+                    int itemClass = 0;
+                    try { itemClass = (int)item.Class; } catch { }
+                    if (itemClass != 43)
+                    {
+                        skippedNonMail++;
+                        continue;
+                    }
                     var subj = TryGetString(item, "Subject") ?? string.Empty;
                     var sender = TryGetString(item, "SenderEmailAddress") ?? string.Empty;
                     if (subj.Contains(query, StringComparison.OrdinalIgnoreCase)
                         || sender.Contains(query, StringComparison.OrdinalIgnoreCase))
                     {
-                        slice.Add(MapMailItem(item, includeBody: false));
-                        if (slice.Count >= top) return;
+                        try
+                        {
+                            slice.Add(MapMailItem(item, false, _logger));
+                            if (slice.Count >= top) return;
+                        }
+                        catch (COMException mapEx)
+                        {
+                            failedItems++;
+                            _logger.LogWarning(mapEx,
+                                "SearchMails ueberspringe Mail-Item (HResult=0x{HResult:X8}); " +
+                                "MapMailItem fehlgeschlagen",
+                                mapEx.HResult);
+                        }
+                        catch (Exception mapEx)
+                        {
+                            failedItems++;
+                            _logger.LogError(mapEx,
+                                "SearchMails unerwarteter Fehler beim Mapping eines Mail-Items");
+                        }
                     }
+                }
+                catch (COMException itemEx)
+                {
+                    failedItems++;
+                    _logger.LogWarning(itemEx,
+                        "SearchMails ueberspringe Item (HResult=0x{HResult:X8}); Item nicht lesbar",
+                        itemEx.HResult);
                 }
                 finally
                 {
-                    Marshal.ReleaseComObject(item);
+                    try { Marshal.ReleaseComObject(item); } catch { }
                 }
             }
         }
@@ -845,7 +1057,15 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     /// Rekursion in Unterordner. Bricht ab, sobald slice.Count >= top
     /// (Abbruch-Signal wird ueber den return propagierenden Aufrufer geprueft).
     /// </summary>
-    private static void CollectMatchingMailsFromSubfolders(dynamic parent, string query, List<MailMessage> slice, int top)
+    private void CollectMatchingMailsFromSubfolders(
+        dynamic parent,
+        string query,
+        List<MailMessage> slice,
+        int top,
+        ref int visitedFolders,
+        ref int skippedFolders,
+        ref int skippedNonMail,
+        ref int failedItems)
     {
         dynamic subFolders = parent.Folders;
         try
@@ -855,12 +1075,14 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             {
                 try
                 {
-                    CollectMatchingMails(sub, query, slice, top);
+                    visitedFolders++;
+                    CollectMatchingMails(sub, query, slice, top,
+                        ref visitedFolders, ref skippedFolders, ref skippedNonMail, ref failedItems);
                     if (slice.Count >= top) return;
                 }
                 finally
                 {
-                    Marshal.ReleaseComObject(sub);
+                    try { Marshal.ReleaseComObject(sub); } catch { }
                 }
             }
         }
@@ -2238,13 +2460,13 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     /// OlObjectClass: 43=olMail, 26=olAppointment, 48=olTask, 40=olContact, ...
     /// Tasks/Contacts/etc. -> v1.1: null.
     /// </summary>
-    private static ActiveItem? MapActiveItemFromCurrentItem(dynamic currentItem)
+    private static ActiveItem? MapActiveItemFromCurrentItem(dynamic currentItem, ILogger? logger = null)
     {
         int objectClass = 0;
         try { objectClass = (int)currentItem.Class; } catch { }
         return objectClass switch
         {
-            43 /* olMail */ => new ActiveMail { Item = MapMailItem(currentItem, includeBody: true) },
+            43 /* olMail */ => new ActiveMail { Item = MapMailItem(currentItem, true, logger) },
             26 /* olAppointment */ => new ActiveEvent { Item = MapAppointmentItem(currentItem) },
             _ => null,
         };
@@ -2308,7 +2530,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
 
                             ActiveItem? mapped = objectClass switch
                             {
-                                43 => new ActiveMail { Item = MapMailItem(item, includeBody: true) },
+                                43 => new ActiveMail { Item = MapMailItem(item, true, _logger) },
                                 26 => new ActiveEvent { Item = MapAppointmentItem(item) },
                                 _ => null,
                             };

@@ -60,8 +60,35 @@ public sealed class MailTools
         [Description("Optional: Volltext-Suchausdruck ueber Subject/Body/Sender.")] string? search = null,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("list_mails folderId={FolderId} top={Top} skip={Skip} filter={Filter}", folderId, top, skip, filter);
-        return await _service.ListMailsAsync(folderId, top, skip, filter, search, cancellationToken);
+        _logger.LogInformation("list_mails folderId={FolderId} top={Top} skip={Skip} filter={Filter} search={Search}", folderId, top, skip, filter, search);
+        try
+        {
+            return await _service.ListMailsAsync(folderId, top, skip, filter, search, cancellationToken);
+        }
+        catch (OutlookServiceException ex)
+        {
+            // OutlookServiceException enthaelt bereits Code + Message + InnerException
+            _logger.LogWarning(ex, "list_mails OutlookServiceException code={Code}", ex.Code);
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            throw; // Aufrufer hat abgebrochen — nicht transformieren
+        }
+        catch (Exception ex)
+        {
+            // Unerwarteter Fehler: vollstaendigen Kontext loggen und als
+            // OutlookServiceException weiterreichen, damit der MCP-Client
+            // die Originalmeldung bekommt (statt nur 'An error occurred invoking ...').
+            _logger.LogError(ex,
+                "list_mails unerwarteter Fehler folderId={FolderId} top={Top} skip={Skip} filter={Filter}",
+                folderId, top, skip, filter);
+            throw new OutlookServiceException(
+                ErrorCode.InternalError,
+                $"list_mails: unerwarteter Fehler ({ex.GetType().Name}): {ex.Message}. " +
+                $"Siehe Server-Log (stderr) fuer vollstaendigen Stack-Trace.",
+                ex);
+        }
     }
 
     [McpServerTool(Name = "get_mail")]
@@ -72,7 +99,28 @@ public sealed class MailTools
         CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("get_mail id={Id} includeBody={Inc}", id, includeBody);
-        return await _service.GetMailAsync(id, includeBody, cancellationToken);
+        try
+        {
+            return await _service.GetMailAsync(id, includeBody, cancellationToken);
+        }
+        catch (OutlookServiceException ex)
+        {
+            _logger.LogWarning(ex, "get_mail OutlookServiceException code={Code}", ex.Code);
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "get_mail unerwarteter Fehler id={Id} includeBody={Inc}", id, includeBody);
+            throw new OutlookServiceException(
+                ErrorCode.InternalError,
+                $"get_mail: unerwarteter Fehler ({ex.GetType().Name}): {ex.Message}. " +
+                $"Siehe Server-Log (stderr) fuer vollstaendigen Stack-Trace.",
+                ex);
+        }
     }
 
     [McpServerTool(Name = "get_mail_headers")]
@@ -115,7 +163,30 @@ public sealed class MailTools
         CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("search_mails query={Query} folderId={FolderId} top={Top}", query, folderId, top);
-        return await _service.SearchMailsAsync(query, folderId, top, cancellationToken);
+        try
+        {
+            return await _service.SearchMailsAsync(query, folderId, top, cancellationToken);
+        }
+        catch (OutlookServiceException ex)
+        {
+            _logger.LogWarning(ex, "search_mails OutlookServiceException code={Code}", ex.Code);
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "search_mails unerwarteter Fehler query={Query} folderId={FolderId} top={Top}",
+                query, folderId, top);
+            throw new OutlookServiceException(
+                ErrorCode.InternalError,
+                $"search_mails: unerwarteter Fehler ({ex.GetType().Name}): {ex.Message}. " +
+                $"Siehe Server-Log (stderr) fuer vollstaendigen Stack-Trace.",
+                ex);
+        }
     }
 
     // ===== Mail: Mutationen =====

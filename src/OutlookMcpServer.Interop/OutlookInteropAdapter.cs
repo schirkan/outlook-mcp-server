@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using Microsoft.CSharp.RuntimeBinder;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OutlookMcpServer.Domain.Abstractions;
@@ -412,17 +414,51 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         return list;
     }
 
-    /// <summary>Defensive Property-Access-Wrapper fuer COM dynamic-Properties.</summary>
+    /// <summary>
+    /// Defensive Property-Access-Wrapper fuer COM dynamic-Properties.
+    /// Beachte: bei einem <c>System.__ComObject</c>-RCW liefert
+    /// <c>obj.GetType().GetProperty(name)</c> NICHT die echten COM/IDispatch-Properties
+    /// (Subject/BodyPreview/To/CC/BCC/etc.) — sondern nur die Wrapper-Typ-Properties.
+    /// Wir gehen daher den direkten <c>dynamic</c>-Property-Pfad ueber den
+    /// C#-dynamic-Dispatcher (welcher intern IDispatch::Invoke nutzt).
+    /// </summary>
     private static string? TryGetString(dynamic obj, string propertyName)
     {
-        try { return (string?)obj.GetType().GetProperty(propertyName)?.GetValue(obj); }
+        try
+        {
+            var value = GetDynamicProperty(obj, propertyName);
+            return value as string;
+        }
         catch { return null; }
     }
 
     private static dynamic? TryGetDynamic(dynamic obj, string propertyName)
     {
-        try { return obj.GetType().GetProperty(propertyName)?.GetValue(obj); }
+        // Direkter dynamic-Property-Zugriff ueber C#-dynamic-Binder (IDispatch::Invoke).
+        try
+        {
+            return GetDynamicProperty(obj, propertyName);
+        }
         catch { return null; }
+    }
+
+    /// <summary>
+    /// Loest eine COM-Property via IDispatch auf. Da der Parameter dynamic ist,
+    /// ruft der C#-Compiler den late-bound GetMember-Binder auf, welcher intern
+    /// IDispatch::Invoke (DISPATCH_PROPERTYGET) ausfuehrt. Das ist der einzige
+    /// Weg, um Outlook-Properties wie Subject, BodyPreview, To/CC/BCC
+    /// (Recipients-Collections) auf einem System.__ComObject-RCW zu lesen —
+    /// GetType().GetProperty(name) liefert nur den RCW-Wrapper.
+    /// </summary>
+    private static object? GetDynamicProperty(dynamic obj, string name)
+    {
+        var binder = Microsoft.CSharp.RuntimeBinder.Binder.GetMember(
+            CSharpBinderFlags.None,
+            name,
+            null,
+            new[] { CSharpArgumentInfo.Create(CSharpArgumentInfoFlags.None, null) });
+        var callsite = CallSite<Func<CallSite, object, object>>.Create(binder);
+        return callsite.Target(callsite, (object)obj);
     }
 
     /// <summary>

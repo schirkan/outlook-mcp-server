@@ -9,9 +9,9 @@ using OutlookMcpServer.Domain.Models.Mail;
 namespace OutlookMcpServer.Tools;
 
 /// <summary>
-/// MCP-Tools fuer Calendar-Operationen. Methoden 1:1 zu
-/// <c>specs/API-DESIGN.md</c>. Naming: <c>snake_case</c> wie Microsoft Graph
+/// MCP-Tools fuer Calendar-Operationen. Naming: <c>snake_case</c>
 /// (z. B. <c>list_events</c>, <c>get_event</c>, <c>create_event</c>).
+/// Spezifikation siehe <c>specs/API-DESIGN.md</c>.
 /// Subject + IDs werden geloggt, Body-Inhalt NIE.
 /// </summary>
 [McpServerToolType]
@@ -29,7 +29,7 @@ public sealed class CalendarTools
     // ===== Kalender =====
 
     [McpServerTool(Name = "list_calendars")]
-    [Description("Listet alle Kalender im aktuellen Outlook-Profil (1:1 zu Graph listCalendars) — Id, Name, IsDefaultCalendar, CanEdit, Owner.")]
+    [Description("Listet alle Kalender im aktuellen Outlook-Profil — Id, Name, IsDefaultCalendar, CanEdit, Owner.")]
     public async Task<IReadOnlyList<Calendar>> ListCalendars(CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("list_calendars");
@@ -37,7 +37,7 @@ public sealed class CalendarTools
     }
 
     [McpServerTool(Name = "get_calendar")]
-    [Description("Liest einen einzelnen Kalender per ID (1:1 zu Graph getCalendar).")]
+    [Description("Liest einen einzelnen Kalender per ID.")]
     public async Task<Calendar> GetCalendar(
         [Description("Kalender-ID (EntryID).")] string id,
         CancellationToken cancellationToken = default)
@@ -49,14 +49,14 @@ public sealed class CalendarTools
     // ===== Termine =====
 
     [McpServerTool(Name = "list_events")]
-    [Description("Listet Termine in einem Zeitfenster (1:1 zu Graph calendarView). Start/End als ISO-8601 + IANA-Zeitzone.")]
+    [Description("Listet Termine in einem Zeitfenster. Start/End als ISO-8601 + IANA-Zeitzone.")]
     public async Task<PagedResult<CalendarEvent>> ListEvents(
         [Description("Optional: Kalender-ID (null = Standardkalender).")] string? calendarId,
         [Description("Fenster-Start (ISO-8601, z. B. 2026-07-15T09:00:00).")] string startDateTime,
         [Description("IANA-Zeitzone des Start-Werts (z. B. Europe/Berlin).")] string startTimeZone,
         [Description("Fenster-Ende (ISO-8601).")] string endDateTime,
         [Description("IANA-Zeitzone des End-Werts.")] string endTimeZone,
-        [Description("Max Anzahl (1-100, Default 50).")] int top = 50,
+        [Description("Max Anzahl (1-250, Default 50). Bei mehr Terminen im Fenster: skip = N * top fuer Seite N (Pagination).")] int top = 50,
         [Description("Skip-Count fuer Pagination (Default 0).")] int skip = 0,
         [Description("Optional: Filter-Ausdruck (z. B. 'isAllDay eq false').")] string? filter = null,
         CancellationToken cancellationToken = default)
@@ -72,7 +72,7 @@ public sealed class CalendarTools
     }
 
     [McpServerTool(Name = "get_event")]
-    [Description("Liest einen einzelnen Termin inkl. Body, Attendees, Reminder (1:1 zu Graph getEvent).")]
+    [Description("Liest einen einzelnen Termin inkl. Body, Attendees, Reminder.")]
     public async Task<CalendarEvent> GetEvent(
         [Description("Termin EntryID.")] string id,
         CancellationToken cancellationToken = default)

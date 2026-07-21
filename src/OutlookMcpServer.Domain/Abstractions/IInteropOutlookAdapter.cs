@@ -53,6 +53,21 @@ public interface IInteropOutlookAdapter
         int top = 25,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Rekursive Ordner-Suche mit DASL-Property-Filter.
+    /// Iteriert ueber alle in <paramref name="scope"/> angegebenen Well-Known-
+    /// Mailordner (inkl. deren Unterordner) und alle Outlook-Stores (PST/OST),
+    /// wendet <paramref name="filter"/> per <c>Items.Restrict()</c> an,
+    /// dedupliziert per EntryID und liefert die neuesten <paramref name="top"/>
+    /// Treffer (sortiert nach ReceivedTime DESC). Pagination: <c>NextSkip=null</c>
+    /// (Hard-Cap). Bei leerem scope werden alle Default-Mailordner durchsucht.
+    /// </summary>
+    Task<PagedResult<MailMessage>> ListMailsRecursiveAsync(
+        IReadOnlyList<string> scope,
+        int top,
+        string? filter,
+        CancellationToken cancellationToken = default);
+
     Task<SendMailResult> SendMailAsync(
         SendMailRequest request,
         CancellationToken cancellationToken = default);

@@ -8,7 +8,14 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
-    <PackageReference Include="Microsoft.Office.Interop.Outlook" Version="15.0.4797.1004" />
+    <!--
+      Microsoft.Office.Interop.Outlook ist NICHT mehr noetig: Outlook wird
+      ueber einen lokal deklarierten [ComImport]-Wrapper aktiviert (siehe
+      OutlookInteropAdapter.OutlookApplication). Das spart die externe
+      office.dll-Abhaengigkeit (v15.0.0.0, PublicKeyToken
+      71e9bce111e9429c), die auf Office 2016+ ohne installiertes PIA-Paket
+      fehlt.
+    -->
   </ItemGroup>
 
   <ItemGroup>

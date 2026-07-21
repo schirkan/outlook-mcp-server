@@ -899,18 +899,64 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             int skippedNonMail = 0;
             int failedItems = 0;
 
-            // Wenn folderId null → rekursiv ueber alle Mail-Ordner durchsuchen
+            // Wenn folderId null → rekursiv ueber alle Mail-Ordner durchsuchen.
+            // Outlook.NameSpace hat KEIN .Items, nur .Folders — daher iterieren
+            // wir erst die Stores, dann pro Store die Top-Level-Folder-Auflistung.
             if (folderId is null)
             {
                 dynamic root = GetMapiNamespace();
+                // root wird NICHT per Marshal.ReleaseComObject freigegeben —
+                // GetMapiNamespace gibt das gecachte _mapiNamespace-Feld zurueck;
+                // ein Release hier wuerde die Refcount-Balance brechen und
+                // Folge-Calls mit InvalidComObjectException scheitern lassen.
                 try
                 {
-                    CollectMatchingMails(root, query, slice, top,
-                        ref visitedFolders, ref skippedFolders, ref skippedNonMail, ref failedItems);
+                    dynamic stores = root.Stores;
+                    bool earlyExit = false;
+                    try
+                    {
+                        foreach (var store in stores)
+                        {
+                            if (earlyExit) break;
+                            try
+                            {
+                                dynamic storeRoot = store.GetRootFolder();
+                                try
+                                {
+                                    dynamic topFolders = storeRoot.Folders;
+                                    try
+                                    {
+                                        foreach (var f in topFolders)
+                                        {
+                                            if (earlyExit) break;
+                                            try
+                                            {
+                                                CollectMatchingMails(f, query, slice, top,
+                                                    ref visitedFolders, ref skippedFolders,
+                                                    ref skippedNonMail, ref failedItems);
+                                                if (slice.Count >= top) earlyExit = true;
+                                            }
+                                            finally
+                                            {
+                                                try { Marshal.ReleaseComObject(f); } catch { }
+                                            }
+                                        }
+                                    }
+                                    finally { Marshal.ReleaseComObject(topFolders); }
+                                }
+                                finally { Marshal.ReleaseComObject(storeRoot); }
+                            }
+                            finally { Marshal.ReleaseComObject(store); }
+                        }
+                    }
+                    finally { Marshal.ReleaseComObject(stores); }
                 }
-                finally
+                catch (COMException ex)
                 {
-                    Marshal.ReleaseComObject(root);
+                    skippedFolders++;
+                    _logger.LogWarning(ex,
+                        "SearchMails Fehler im Store-Walk (HResult=0x{HResult:X8})",
+                        ex.HResult);
                 }
             }
             else
@@ -938,6 +984,348 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                 NextSkip = null, // Search liefert keine Pagination (Hard-Cap via top)
             };
         }, nameof(SearchMailsAsync));
+    }
+
+    public async Task<PagedResult<MailMessage>> ListMailsRecursiveAsync(
+        IReadOnlyList<string> scope,
+        int top,
+        string? filter,
+        CancellationToken cancellationToken = default)
+    {
+        await GetOutlookApplicationAsync(cancellationToken);
+        _logger.LogInformation(
+            "ListMailsRecursive START scope=[{Scope}] top={Top} filter={Filter}",
+            string.Join(",", scope), top, filter);
+        return await RunComAsync(() =>
+        {
+            // scope = leer -> Default = alle erlaubten Well-Known-Mailordner.
+            var resolvedScope = (scope is null || scope.Count == 0)
+                ? new List<string>
+                  {
+                      WellKnownFolder.Inbox,
+                      WellKnownFolder.Drafts,
+                      WellKnownFolder.SentItems,
+                      WellKnownFolder.DeletedItems,
+                      WellKnownFolder.JunkEmail,
+                      WellKnownFolder.Archive,
+                      WellKnownFolder.Outbox,
+                  }
+                : new List<string>(scope);
+
+            // Sammelt Treffer aller Folder, dedupliziert per EntryID und capped bei top.
+            var collected = new List<(string EntryId, DateTime Received, MailMessage Msg)>(top * 2);
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            int visitedFolders = 0, skippedFolders = 0, skippedNonMail = 0,
+                failedItems = 0, restrictedItems = 0, fallbackFolders = 0;
+
+            dynamic root = GetMapiNamespace();
+            // root wird NICHT per Marshal.ReleaseComObject freigegeben — siehe
+            // Kommentar in SearchMailsAsync und im Methoden-Body oben.
+            try
+            {
+                foreach (var name in resolvedScope)
+                {
+                    dynamic? folder = null;
+                    try
+                    {
+                        var ol = OlEnumMappings.ToOlDefaultFolder(name);
+                        if (ol is null)
+                        {
+                            skippedFolders++;
+                            continue;
+                        }
+                        try
+                        {
+                            folder = root.GetDefaultFolder(ol.Value);
+                        }
+                        catch (Exception olEx)
+                        {
+                            skippedFolders++;
+                            _logger.LogWarning(olEx,
+                                "ListMailsRecursive GetDefaultFolder({Name}) fehlgeschlagen; uebersprungen",
+                                name);
+                            continue;
+                        }
+                        if (folder is null)
+                        {
+                            skippedFolders++;
+                            continue;
+                        }
+                        try
+                        {
+                            CollectMailsFromFolderRecursive(
+                                folder,
+                                filter,
+                                top,
+                                collected,
+                                seen,
+                                ref visitedFolders,
+                                ref skippedFolders,
+                                ref skippedNonMail,
+                                ref failedItems,
+                                ref restrictedItems,
+                                ref fallbackFolders);
+                            if (collected.Count >= top) break;
+                        }
+                        catch (COMException ex)
+                        {
+                            skippedFolders++;
+                            _logger.LogWarning(ex,
+                                "ListMailsRecursive ueberspringe Top-Level-Folder {Name} (HResult=0x{HResult:X8})",
+                                name, ex.HResult);
+                        }
+                        catch (Exception ex)
+                        {
+                            skippedFolders++;
+                            _logger.LogWarning(ex,
+                                "ListMailsRecursive ueberspringe Top-Level-Folder {Name}: unerwarteter Fehler",
+                                name);
+                        }
+                    }
+                    finally
+                    {
+                        if (folder is not null)
+                        {
+                            try { Marshal.ReleaseComObject(folder); } catch { }
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                // Hier ist nichts zusaetzlich zum root releasen.
+                _ = root;
+            }
+
+            // Sort neueste zuerst, dann auf top capen.
+            collected.Sort((a, b) => DateTime.Compare(b.Received, a.Received));
+            if (collected.Count > top)
+            {
+                collected.RemoveRange(top, collected.Count - top);
+            }
+
+            var slice = new List<MailMessage>(collected.Count);
+            foreach (var t in collected) slice.Add(t.Msg);
+
+            _logger.LogInformation(
+                "ListMailsRecursive DONE returned={Returned} visitedFolders={Visited} " +
+                "skippedFolders={Skipped} skippedNonMail={SkippedNonMail} failedItems={FailedItems} " +
+                "restrictedHits={Restricted} fallbackFolders={Fallback}",
+                slice.Count, visitedFolders, skippedFolders, skippedNonMail,
+                failedItems, restrictedItems, fallbackFolders);
+
+            return new PagedResult<MailMessage>
+            {
+                Value = slice,
+                NextSkip = null,
+            };
+        }, nameof(ListMailsRecursiveAsync));
+    }
+
+    /// <summary>
+    /// Sammelt Mails aus einem Folder (rekursiv in Unterordner), wendet
+    /// <paramref name="filter"/> per <c>Items.Restrict()</c> an, dedupliziert
+    /// per EntryID. Bricht ab, sobald <c>collected.Count &gt;= top</c>.
+    /// </summary>
+    private void CollectMailsFromFolderRecursive(
+        dynamic parent,
+        string? filter,
+        int top,
+        List<(string EntryId, DateTime Received, MailMessage Msg)> collected,
+        HashSet<string> seen,
+        ref int visitedFolders,
+        ref int skippedFolders,
+        ref int skippedNonMail,
+        ref int failedItems,
+        ref int restrictedItems,
+        ref int fallbackFolders)
+    {
+        // 1) Items dieses Folders sammeln.
+        dynamic? items = null;
+        try
+        {
+            try { items = parent.Items; }
+            catch (COMException ex)
+            {
+                skippedFolders++;
+                _logger.LogWarning(ex,
+                    "ListMailsRecursive ueberspringe Folder (HResult=0x{HResult:X8}): Items nicht lesbar",
+                    ex.HResult);
+                items = null;
+            }
+            catch (Exception ex)
+            {
+                skippedFolders++;
+                _logger.LogWarning(ex,
+                    "ListMailsRecursive ueberspringe Folder: parent.Items nicht aufrufbar");
+                items = null;
+            }
+            if (items is not null)
+            {
+                visitedFolders++;
+                dynamic? restricted = null;
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(filter))
+                    {
+                        restricted = items.Restrict(filter!);
+                        var c = (int)restricted.Count;
+                        _logger.LogInformation(
+                            "ListMailsRecursive Restrict OK: folder={FolderName} hits={Hits}",
+                            (string)(TryGetString(parent, "Name") ?? "?"), c);
+                    }
+                    else
+                    {
+                        restricted = items;
+                    }
+                }
+                catch (COMException restrictEx)
+                {
+                    fallbackFolders++;
+                    _logger.LogWarning(restrictEx,
+                        "ListMailsRecursive Restrict fehlgeschlagen (HResult=0x{HResult:X8}); " +
+                        "Fallback auf ungefilterte Iteration. filter={Filter}",
+                        restrictEx.HResult, filter);
+                    try { Marshal.ReleaseComObject(items); } catch { }
+                    try { items = parent.Items; } catch { items = null; }
+                    restricted = items;
+                }
+                if (restricted is not null)
+                {
+                    CollectItemsInto(restricted, top, collected, seen,
+                        ref skippedNonMail, ref failedItems, ref restrictedItems);
+                    try { Marshal.ReleaseComObject(restricted); } catch { }
+                }
+            }
+        }
+        finally
+        {
+            if (items is not null)
+            {
+                try { Marshal.ReleaseComObject(items); } catch { }
+            }
+        }
+
+        if (collected.Count >= top) return;
+
+        // 2) Rekursion in Unterordner.
+        dynamic? subFolders = null;
+        try
+        {
+            try { subFolders = parent.Folders; }
+            catch (COMException ex)
+            {
+                skippedFolders++;
+                _logger.LogWarning(ex,
+                    "ListMailsRecursive ueberspringe Subfolder-Liste (HResult=0x{HResult:X8})",
+                    ex.HResult);
+                subFolders = null;
+            }
+            if (subFolders is null) return;
+            foreach (var sub in subFolders)
+            {
+                try
+                {
+                    CollectMailsFromFolderRecursive(
+                        sub,
+                        filter,
+                        top,
+                        collected,
+                        seen,
+                        ref visitedFolders,
+                        ref skippedFolders,
+                        ref skippedNonMail,
+                        ref failedItems,
+                        ref restrictedItems,
+                        ref fallbackFolders);
+                    if (collected.Count >= top) return;
+                }
+                finally
+                {
+                    try { Marshal.ReleaseComObject(sub); } catch { }
+                }
+            }
+        }
+        finally
+        {
+            if (subFolders is not null)
+            {
+                try { Marshal.ReleaseComObject(subFolders); } catch { }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Iteriert ueber <paramref name="items"/> (1-basiert), mappt jedes olMail-Item
+    /// und nimmt es in <paramref name="collected"/> auf, sofern die EntryID
+    /// noch nicht in <paramref name="seen"/> liegt. Bricht ab, sobald
+    /// <c>collected.Count &gt;= top</c>.
+    /// </summary>
+    private void CollectItemsInto(
+        dynamic items,
+        int top,
+        List<(string EntryId, DateTime Received, MailMessage Msg)> collected,
+        HashSet<string> seen,
+        ref int skippedNonMail,
+        ref int failedItems,
+        ref int restrictedItems)
+    {
+        int total;
+        try { total = (int)items.Count; } catch { total = 0; }
+        for (int i = 1; i <= total; i++)
+        {
+            if (collected.Count >= top) return;
+            dynamic? item = null;
+            try
+            {
+                try { item = items.Item(i); }
+                catch (COMException)
+                {
+                    failedItems++;
+                    continue;
+                }
+                int itemClass = 0;
+                try { itemClass = (int)item.Class; } catch { }
+                if (itemClass != 43)
+                {
+                    skippedNonMail++;
+                    continue;
+                }
+                string entryId;
+                try { entryId = (string)item.EntryID; }
+                catch
+                {
+                    failedItems++;
+                    continue;
+                }
+                if (!seen.Add(entryId))
+                {
+                    restrictedItems++;
+                    continue;
+                }
+                MailMessage msg;
+                try
+                {
+                    msg = MapMailItem(item, false, _logger);
+                }
+                catch (COMException)
+                {
+                    failedItems++;
+                    continue;
+                }
+                DateTime received;
+                try { received = (DateTime)item.ReceivedTime; }
+                catch { received = DateTime.MinValue; }
+                collected.Add((entryId, received, msg));
+            }
+            finally
+            {
+                if (item is not null)
+                {
+                    try { Marshal.ReleaseComObject(item); } catch { }
+                }
+            }
+        }
     }
 
     /// <summary>

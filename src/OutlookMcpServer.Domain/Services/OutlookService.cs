@@ -114,6 +114,37 @@ public sealed class OutlookService : IOutlookService
         return _adapter.SearchMailsAsync(query, folderId, top, cancellationToken);
     }
 
+    public Task<PagedResult<MailMessage>> ListMailsRecursiveAsync(
+        IReadOnlyList<string> scope,
+        int top = 25,
+        string? filter = null,
+        CancellationToken cancellationToken = default)
+    {
+        ValidationHelpers.ValidateRange(top, 1, 100, nameof(top));
+        // scope-Validierung: null/leer -> Default-Mailordner = OK.
+        // Sonst jeder Eintrag muss ein gueltiger Well-Known-Name sein.
+        if (scope is not null)
+        {
+            foreach (var s in scope)
+            {
+                if (string.IsNullOrWhiteSpace(s))
+                {
+                    throw new OutlookServiceException(
+                        ErrorCode.InvalidInput,
+                        "scope: enthaelt leeren oder null Eintrag");
+                }
+                if (!WellKnownFolder.IsKnownMailFolder(s))
+                {
+                    throw new OutlookServiceException(
+                        ErrorCode.InvalidInput,
+                        $"scope: '{s}' ist kein Well-Known-Mailordner. Erlaubt: " +
+                        string.Join(", ", WellKnownFolder.MailFolderNames));
+                }
+            }
+        }
+        return _adapter.ListMailsRecursiveAsync(scope ?? Array.Empty<string>(), top, filter, cancellationToken);
+    }
+
     // ===== Mail: Mutationen =====
 
     public Task<SendMailResult> SendMailAsync(

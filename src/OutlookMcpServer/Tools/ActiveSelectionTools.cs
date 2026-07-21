@@ -7,8 +7,8 @@ using OutlookMcpServer.Domain.Models.Common;
 namespace OutlookMcpServer.Tools;
 
 /// <summary>
-/// MCP-Tools fuer Active-Inspector + Selection. COM-only, kein Graph-Aequivalent.
-/// Naming: <c>snake_case</c> wie Microsoft Graph.
+/// MCP-Tools fuer Active-Inspector + Selection (COM-only).
+/// Naming: <c>snake_case</c> (z. B. <c>get_active_item</c>, <c>get_selected_items</c>).
 /// </summary>
 [McpServerToolType]
 public sealed class ActiveSelectionTools

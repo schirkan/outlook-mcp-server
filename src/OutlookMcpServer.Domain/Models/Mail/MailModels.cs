@@ -43,6 +43,23 @@ public static class WellKnownFolder
     public const string JunkEmail = "junkEmail";
     public const string Archive = "archive";
     public const string Outbox = "outbox";
+
+    /// <summary>Alle erlaubten Mail-Well-Known-Ordner (fuer scope-Listen und Validierung).</summary>
+    public static readonly IReadOnlyList<string> MailFolderNames = new[]
+    {
+        Inbox, Drafts, SentItems, DeletedItems, JunkEmail, Archive, Outbox,
+    };
+
+    /// <summary>Prueft, ob ein Name einer der Mail-Well-Known-Ordner ist.</summary>
+    public static bool IsKnownMailFolder(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        foreach (var n in MailFolderNames)
+        {
+            if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
 }
 
 /// <summary>

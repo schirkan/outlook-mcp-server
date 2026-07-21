@@ -56,6 +56,18 @@ public interface IOutlookService
         int top = 25,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Rekursive Ordner-Suche mit DASL-Property-Filter ueber die in <paramref name="scope"/>
+    /// angegebenen Well-Known-Mailordner plus deren Unterordner. Liefert
+    /// neueste zuerst, dedupliziert per EntryID. Hard-Cap <paramref name="top"/>
+    /// (1-100). Pagination wird nicht unterstuetzt (NextSkip=null).
+    /// </summary>
+    Task<PagedResult<MailMessage>> ListMailsRecursiveAsync(
+        IReadOnlyList<string> scope,
+        int top = 25,
+        string? filter = null,
+        CancellationToken cancellationToken = default);
+
     // ===== Mail: Mutationen =====
 
     Task<SendMailResult> SendMailAsync(

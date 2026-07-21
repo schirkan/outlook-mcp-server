@@ -103,6 +103,17 @@ public sealed class FakeOutlookService : IOutlookService
         return Task.FromResult(new PagedResult<MailMessage> { Value = list });
     }
 
+    public Task<PagedResult<MailMessage>> ListMailsRecursiveAsync(
+        IReadOnlyList<string> scope,
+        int top = 25,
+        string? filter = null,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"{nameof(ListMailsRecursiveAsync)}:scope={string.Join(",", scope)},top={top},filter={filter ?? "(null)"}");
+        // Default-Fake: leere Liste (Tests, die Inhalte brauchen, nehmen besser FakeInteropAdapter direkt).
+        return Task.FromResult(new PagedResult<MailMessage> { Value = Array.Empty<MailMessage>(), NextSkip = null });
+    }
+
     public Task<SendMailResult> SendMailAsync(SendMailRequest request, CancellationToken cancellationToken = default)
     {
         Calls.Add($"{nameof(SendMailAsync)}:subject={request.Subject},to={request.To.Count}");

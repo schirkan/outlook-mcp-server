@@ -195,4 +195,56 @@ public sealed class OutlookServiceTests
         await svc.SendMailAsync(SampleData.ValidSendRequest());
         Assert.Contains(adapter.Calls, c => c.StartsWith(nameof(OutlookMcpServer.Domain.Abstractions.IInteropOutlookAdapter.SendMailAsync)));
     }
+
+    // ===== ListMailsRecursiveAsync: Validation + Passthrough =====
+
+    [Fact]
+    public async Task ListMailsRecursiveAsync_TopAboveRange_ThrowsInvalidInput()
+    {
+        var svc = CreateService(new OutlookOptions(), new FakeInteropAdapter());
+        var ex = await Assert.ThrowsAsync<OutlookServiceException>(() =>
+            svc.ListMailsRecursiveAsync(new[] { "inbox" }, top: 200));
+        Assert.Equal(ErrorCode.InvalidInput, ex.Code);
+    }
+
+    [Fact]
+    public async Task ListMailsRecursiveAsync_InvalidScopeEntry_ThrowsInvalidInput()
+    {
+        var svc = CreateService(new OutlookOptions(), new FakeInteropAdapter());
+        var ex = await Assert.ThrowsAsync<OutlookServiceException>(() =>
+            svc.ListMailsRecursiveAsync(new[] { "inbox", "not-a-real-folder" }));
+        Assert.Equal(ErrorCode.InvalidInput, ex.Code);
+        Assert.Contains("not-a-real-folder", ex.Message);
+    }
+
+    [Fact]
+    public async Task ListMailsRecursiveAsync_EmptyScopeEntry_ThrowsInvalidInput()
+    {
+        var svc = CreateService(new OutlookOptions(), new FakeInteropAdapter());
+        var ex = await Assert.ThrowsAsync<OutlookServiceException>(() =>
+            svc.ListMailsRecursiveAsync(new[] { "inbox", "" }));
+        Assert.Equal(ErrorCode.InvalidInput, ex.Code);
+    }
+
+    [Fact]
+    public async Task ListMailsRecursiveAsync_ValidScopeAndFilter_PassesToAdapter()
+    {
+        var adapter = new FakeInteropAdapter();
+        var svc = CreateService(new OutlookOptions(), adapter);
+        var result = await svc.ListMailsRecursiveAsync(
+            new[] { "inbox", "archive" }, top: 10, filter: "[UnRead] = true");
+        Assert.NotNull(result);
+        Assert.Contains(
+            adapter.Calls,
+            c => c.Contains("scope=inbox,archive") && c.Contains("top=10") && c.Contains("[UnRead] = true"));
+    }
+
+    [Fact]
+    public async Task ListMailsRecursiveAsync_NullScope_PassesEmptyArrayToAdapter()
+    {
+        var adapter = new FakeInteropAdapter();
+        var svc = CreateService(new OutlookOptions(), adapter);
+        await svc.ListMailsRecursiveAsync(null!, top: 5);
+        Assert.Contains(adapter.Calls, c => c.Contains("ListMailsRecursiveAsync") && c.Contains("scope="));
+    }
 }

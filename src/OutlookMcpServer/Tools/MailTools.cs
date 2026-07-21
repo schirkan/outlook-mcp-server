@@ -9,9 +9,9 @@ using OutlookMcpServer.Domain.Models.Mail;
 namespace OutlookMcpServer.Tools;
 
 /// <summary>
-/// MCP-Tools fuer Mail-Operationen. Methoden 1:1 zu
-/// <c>specs/API-DESIGN.md</c>. Naming: <c>snake_case</c> wie Microsoft Graph
+/// MCP-Tools fuer Mail-Operationen. Naming: <c>snake_case</c>
 /// (z. B. <c>list_mails</c>, <c>get_mail</c>, <c>send_mail</c>).
+/// Spezifikation siehe <c>specs/API-DESIGN.md</c>.
 /// </summary>
 [McpServerToolType]
 public sealed class MailTools
@@ -28,9 +28,9 @@ public sealed class MailTools
     // ===== Mail: Ordner =====
 
     [McpServerTool(Name = "list_mail_folders")]
-    [Description("Listet Mail-Ordner im aktuellen Outlook-Profil (1:1 zu Graph listMailFolders).")]
+    [Description("Listet Mail-Ordner im aktuellen Outlook-Profil. Eine Ebene: liefert die direkten Kinder des Parent-Ordners (oder Top-Level, wenn parentFolderId=null/fehlt). Fuer volle Baumliste rekursiv selbst aufrufen: fuer jeden zurueckgegebenen Ordner erneut list_mail_folders(parentFolderId=<ordner.id>) und iterieren.")]
     public async Task<PagedResult<MailFolder>> ListMailFolders(
-        [Description("Optional: Parent-Folder-ID fuer Unterordner-Auflistung.")] string? parentFolderId = null,
+        [Description("Optional: Parent-Folder-ID fuer Unterordner-Auflistung. Null/leer = Top-Level-Ordner des Profils (Posteingang, Gesendete, Entwuerfe, Archiv, etc.).")] string? parentFolderId = null,
         [Description("Hidden-Folder mit aufnehmen (Default false).")] bool includeHidden = false,
         CancellationToken cancellationToken = default)
     {
@@ -51,13 +51,37 @@ public sealed class MailTools
     // ===== Mail: Nachrichten =====
 
     [McpServerTool(Name = "list_mails")]
-    [Description("Listet Mails in einem Ordner (1:1 zu Graph listMails) — Subject, From, To, SentDateTime, IsRead, HasAttachments, BodyPreview.")]
+    [Description("Listet Mails in einem Ordner (Subject, From, To, SentDateTime, ReceivedDateTime, IsRead, HasAttachments, Importance, BodyPreview).")]
     public async Task<PagedResult<MailMessage>> ListMails(
-        [Description("Folder-ID oder Well-Known-Name.")] string folderId,
-        [Description("Max Anzahl (1-100, Default 25).")] int top = 25,
-        [Description("Skip-Count fuer Pagination (Default 0).")] int skip = 0,
-        [Description("Optional: OData-Filter-Ausdruck (nur eingeschraenkter Subset, siehe API-DESIGN).")] string? filter = null,
-        [Description("Optional: Volltext-Suchausdruck ueber Subject/Body/Sender.")] string? search = null,
+        [Description("Folder-ID (EntryID) oder Well-Known-Name. Erlaubte Well-Known-Namen: inbox, drafts, sentItems, deletedItems, junkEmail, archive, outbox. WICHTIG: durchsucht NUR diesen Ordner, NICHT seine Unterordner. Fuer alle ungelesenen Mails ueber mehrere Ordner: search_mails mit folderId=null, oder mehrere list_mails-Calls pro Ordner (z. B. via list_mail_folders rekursiv).")] string folderId,
+        [Description("Max Anzahl zurueckgegebener Mails (1-100, Default 25). Bei mehr Ergebnissen: skip = N * top fuer Seite N (Pagination).")] int top = 25,
+        [Description("Skip-Count fuer Pagination (Default 0). Fuer Seite N: skip = N * top.")] int skip = 0,
+        [Description(@"Optional: DASL-Filterausdruck fuer Outlooks Items.Restrict(). Der Ausdruck wird unverändert an Outlook weitergereicht — bei ungültiger Syntax fällt der Server auf ungefilterte Iteration zurück.
+
+Syntax: Outlook-DASL (JET-Query-Dialekt). Property-Namen in eckigen Klammern, Operatoren =, <>, >, <, >=, <=, LIKE, AND, OR, NOT.
+
+Häufige Properties:
+  [UnRead]             — boolean (true = ungelesen)
+  [Subject]            — string (mit LIKE '%suchbegriff%')
+  [Body]               — string (mit LIKE '%suchbegriff%')
+  [SenderEmailAddress] — string
+  [ReceivedTime]       — datetime (US-Format: 'M/d/yyyy h:mm:ss tt', z.B. '7/21/2026 6:00:00 PM')
+  [SentOn]             — datetime
+  [Importance]         — 0=Low, 1=Normal, 2=High
+  [HasAttachments]     — boolean
+
+Beispiele:
+  Nur ungelesene Mails:
+    [UnRead] = true
+  Heute empfangen:
+    [ReceivedTime] >= '7/21/2026 12:00:00 AM'
+  Wichtige Mails von heute:
+    [Importance] = 2 AND [ReceivedTime] >= '7/21/2026 12:00:00 AM'
+  Mails mit Anhang aus bestimmtem Absender:
+    [HasAttachments] = true AND [SenderEmailAddress] LIKE '%@example.com'
+
+Hinweis: dies ist KEIN OData-Filter. Filter wie 'isRead eq false' oder 'receivedDateTime ge 2026-07-21' werden unveraendert an Outlook weitergegeben, was eine COMException ausloest. Verwende stattdessen die DASL-Syntax oben.")] string? filter = null,
+        [Description(@"Optional: Volltext-Suchausdruck. Wird intern als DASL-LIKE-Filter ueber Subject und Body eingesetzt: ([Subject] LIKE '%query%' OR [Body] LIKE '%query%'). Sonderzeichen '%' und '_' werden als Wildcards interpretiert. Beispiel: 'Rechnung' findet Mails mit 'Rechnung' im Subject oder Body.")] string? search = null,
         CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("list_mails folderId={FolderId} top={Top} skip={Skip} filter={Filter} search={Search}", folderId, top, skip, filter, search);
@@ -92,7 +116,7 @@ public sealed class MailTools
     }
 
     [McpServerTool(Name = "get_mail")]
-    [Description("Liest eine vollstaendige Mail inkl. Body (1:1 zu Graph getMessage).")]
+    [Description("Liest eine vollstaendige Mail inkl. Body.")]
     public async Task<MailMessage> GetMail(
         [Description("Mail EntryID.")] string id,
         [Description("Body einlesen (Default true) — bei false nur Header/Metadata zur Performance.")] bool includeBody = true,
@@ -155,11 +179,11 @@ public sealed class MailTools
     }
 
     [McpServerTool(Name = "search_mails")]
-    [Description("Volltext-Suche ueber Subject/Body/Sender ueber optional definierbares FolderScope.")]
+    [Description("Inhaltssuche (Volltext) in Subject + SenderEmailAddress. Liefert Mails, deren Subject oder Sender-Email den Query enthaelt (case-insensitive). Bei folderId=null: REKURSIV ueber ALLE Mail-Ordner des Profils inkl. Unterordner. Keine Filterung auf UnRead/HasAttachments etc. — dafuer list_mails mit DASL-Filter verwenden.")]
     public async Task<PagedResult<MailMessage>> SearchMails(
-        [Description("Suchausdruck (Keywords oder Phrase).")] string query,
-        [Description("Optional: Folder-ID oder Well-Known-Name fuer Scope-Einschraenkung.")] string? folderId = null,
-        [Description("Max Anzahl (1-100, Default 25).")] int top = 25,
+        [Description("Suchausdruck (Keywords oder Phrase, case-insensitive). Mindestens 1 Zeichen. Wird in Subject und SenderEmailAddress gesucht. Beispiel: 'rechnung' findet Mails mit 'rechnung' im Subject oder Sender; 'pietschmann' findet alle Mails mit @pietschmann-Absender.")] string query,
+        [Description(@"Optional: Folder-ID (EntryID) oder Well-Known-Name zur Scope-Einschraenkung (inbox, drafts, sentItems, deletedItems, junkEmail, archive, outbox). Wenn leer/Null: REKURSIVE Suche ueber ALLE Mail-Ordner des Profils (Posteingang, Archiv, Gesendete, etc. plus aller Unterordner).")] string? folderId = null,
+        [Description(@"Max Anzahl zurueckgegebener Mails (1-100, Default 25). Bei mehr Treffern: Pagination wird NICHT unterstuetzt (NextSkip ist null) — Suche bricht bei top=100 ab. Fuer vollstaendiges Ergebnis: query enger fassen, oder folderId auf einen Teilbereich einschraenken.")] int top = 25,
         CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("search_mails query={Query} folderId={FolderId} top={Top}", query, folderId, top);
@@ -184,6 +208,55 @@ public sealed class MailTools
             throw new OutlookServiceException(
                 ErrorCode.InternalError,
                 $"search_mails: unerwarteter Fehler ({ex.GetType().Name}): {ex.Message}. " +
+                $"Siehe Server-Log (stderr) fuer vollstaendigen Stack-Trace.",
+                ex);
+        }
+    }
+
+    [McpServerTool(Name = "list_mails_recursive")]
+    [Description(@"Listet Mails REKURSIV ueber mehrere Mail-Ordner UND deren Unterordner. Im Unterschied zu list_mails (nur ein Ordner) und search_mails (Subject/Sender-Textsuche) ist dieses Tool fuer property-basierte Filter ueber den gesamten Posteingangs-Bereich gedacht: filter=[UnRead] = true liefert z. B. alle ungelesenen Mails in Inbox + Archiv + allen anderen gewaehlten Scopes, inkl. Unterordner.
+
+Reichweite: scope (Default = alle Standard-Mailordner): inbox, drafts, sentItems, deletedItems, junkEmail, archive, outbox. Mehrere als Komma-Liste. Pro Folder wird rekursiv in alle Unterordner abgestiegen. Hinweis: es werden alle Outlook-Stores (OST/PST) beruecksichtigt.
+
+Filter: DASL-Ausdruck (gleiche Syntax wie list_mails). Beispiele:
+  [UnRead] = true                                                    — nur ungelesene
+  [UnRead] = true AND [HasAttachments] = true                       — ungelesene mit Anhang
+  [Importance] = 2                                                   — nur High-Importance
+  [ReceivedTime] >= '7/1/2026 12:00:00 AM'                          — seit Wochenbeginn (US-Format)
+
+Ergebnis: sortiert nach ReceivedTime DESC (neueste zuerst), dedupliziert per EntryID, Hard-Cap bei top. Es gibt keine Pagination (NextSkip ist null) — bei mehr Treffern die Top einschraenken oder query enger fassen.
+
+Performance: kann bei grossen PSTs langsam sein (vollstaendiger Ordner-Walk). Bei Exchange-Accounts wird der Server-Side-Filter (Restrict) ausgenutzt, wo moeglich.")]
+    public async Task<PagedResult<MailMessage>> ListMailsRecursive(
+        [Description(@"Optionale Komma-Liste der Well-Known-Mailordner zur Scope-Einschraenkung. Erlaubte Werte: inbox, drafts, sentItems, deletedItems, junkEmail, archive, outbox. Default = alle genannten (alle Mail-Ordner des Profils). Beispiel: 'inbox,archive' durchsucht nur Posteingang + Archiv (jeweils rekursiv).")] string? scope = null,
+        [Description(@"Max Anzahl zurueckgegebener Mails (1-100, Default 25). Hard-Cap; keine Pagination. Bei mehr Treffern wird nach ReceivedTime DESC auf top limitiert; aeltere Mails gehen verloren.")] int top = 25,
+        [Description(@"Optional: DASL-Filterausdruck, wird an Outlook Items.Restrict() weitergereicht. Bei ungueltiger Syntax Fallback auf ungefilterte Iteration pro Folder (Warnung im Server-Log). Haeufig genutzte Properties: [UnRead] (boolean), [Importance] (0=Low,1=Normal,2=High), [HasAttachments] (boolean), [ReceivedTime] (datetime, US-Format 'M/d/yyyy h:mm:ss tt').")] string? filter = null,
+        CancellationToken cancellationToken = default)
+    {
+        var scopeList = string.IsNullOrWhiteSpace(scope)
+            ? Array.Empty<string>()
+            : scope.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        _logger.LogInformation(
+            "list_mails_recursive scope={Scope} top={Top} filter={Filter}",
+            string.Join(",", scopeList), top, filter);
+        try
+        {
+            return await _service.ListMailsRecursiveAsync(scopeList, top, filter, cancellationToken);
+        }
+        catch (OutlookServiceException ex)
+        {
+            _logger.LogWarning(ex, "list_mails_recursive OutlookServiceException code={Code}", ex.Code);
+            throw;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "list_mails_recursive unerwarteter Fehler scope={Scope} top={Top} filter={Filter}",
+                string.Join(",", scopeList), top, filter);
+            throw new OutlookServiceException(
+                ErrorCode.InternalError,
+                $"list_mails_recursive: unerwarteter Fehler ({ex.GetType().Name}): {ex.Message}. " +
                 $"Siehe Server-Log (stderr) fuer vollstaendigen Stack-Trace.",
                 ex);
         }

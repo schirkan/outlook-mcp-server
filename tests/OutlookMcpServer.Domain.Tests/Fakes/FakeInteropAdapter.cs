@@ -45,6 +45,33 @@ public sealed class FakeInteropAdapter : IInteropOutlookAdapter
     public Task<PagedResult<MailMessage>> SearchMailsAsync(string query, string? folderId = null, int top = 25, CancellationToken cancellationToken = default)
         => Task.FromResult(new PagedResult<MailMessage> { Value = Array.Empty<MailMessage>() });
 
+    /// <summary>
+    /// Test-Hook: mails, die von <see cref="ListMailsRecursiveAsync"/> zurueckgegeben werden.
+    /// </summary>
+    public Func<ListMailsRecursiveArgs, IReadOnlyList<MailMessage>>? OnListMailsRecursiveAsync { get; set; }
+
+    public Task<PagedResult<MailMessage>> ListMailsRecursiveAsync(
+        IReadOnlyList<string> scope,
+        int top,
+        string? filter,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"{nameof(ListMailsRecursiveAsync)}:scope={string.Join(",", scope)},top={top},filter={filter ?? "(null)"}");
+        IReadOnlyList<MailMessage> items;
+        if (OnListMailsRecursiveAsync is null)
+        {
+            items = Array.Empty<MailMessage>();
+        }
+        else
+        {
+            items = OnListMailsRecursiveAsync(new ListMailsRecursiveArgs(
+                new List<string>(scope), top, filter));
+        }
+        var slice = new List<MailMessage>(Math.Min(top, items.Count));
+        for (int i = 0; i < items.Count && i < top; i++) slice.Add(items[i]);
+        return Task.FromResult(new PagedResult<MailMessage> { Value = slice, NextSkip = null });
+    }
+
     public Task<SendMailResult> SendMailAsync(SendMailRequest request, CancellationToken cancellationToken = default)
     {
         Calls.Add($"{nameof(SendMailAsync)}:subject={request.Subject}");

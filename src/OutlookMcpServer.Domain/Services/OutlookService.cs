@@ -76,6 +76,29 @@ public sealed class OutlookService : IOutlookService
         return _adapter.GetMailAsync(id, includeBody, cancellationToken);
     }
 
+    public async Task<BulkMailResult> GetMailsAsync(
+        IReadOnlyList<string> ids,
+        bool includeBody = false,
+        CancellationToken cancellationToken = default)
+    {
+        if (ids is null)
+        {
+            throw new OutlookServiceException(
+                ErrorCode.InvalidInput,
+                "ids: Liste ist null");
+        }
+        // Hard-Cap 50: Bulk-Variante vermeidet N round-trips, aber ein Caller
+        // mit 1000 IDs soll weiterhin paginieren (list_mails + iter).
+        ValidationHelpers.ValidateRange(ids.Count, 1, 50, "ids.Count");
+        foreach (var id in ids)
+        {
+            ValidationHelpers.ValidateStringNotEmpty(id, "ids[]");
+        }
+        // Deduplizieren: gleiche EntryID mehrfach -> nur einmal fetchen.
+        var distinct = ids.Distinct(StringComparer.Ordinal).ToList();
+        return await _adapter.GetMailsAsync(distinct, includeBody, cancellationToken);
+    }
+
     public Task<IReadOnlyList<InternetMessageHeader>> GetMailHeadersAsync(
         string id,
         CancellationToken cancellationToken = default)

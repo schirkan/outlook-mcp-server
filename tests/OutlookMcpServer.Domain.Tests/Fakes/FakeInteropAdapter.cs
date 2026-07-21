@@ -33,6 +33,21 @@ public sealed class FakeInteropAdapter : IInteropOutlookAdapter
     public Task<MailMessage> GetMailAsync(string id, bool includeBody = true, CancellationToken cancellationToken = default)
         => throw new NotSupportedException();
 
+    public Task<BulkMailResult> GetMailsAsync(
+        IReadOnlyList<string> ids,
+        bool includeBody = false,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"{nameof(GetMailsAsync)}:count={ids.Count},includeBody={includeBody}");
+        // Default: nichts gefunden, alle in notFoundIds. Caller-Tests koennen OnGetMails ueberschreiben
+        // (Property existiert auf FakeOutlookService, hier nicht noetig — Service-Validation-Tests zaehlen nur Calls).
+        return Task.FromResult(new BulkMailResult
+        {
+            Value = Array.Empty<MailMessage>(),
+            NotFoundIds = ids.ToList(),
+        });
+    }
+
     public Task<IReadOnlyList<InternetMessageHeader>> GetMailHeadersAsync(string id, CancellationToken cancellationToken = default)
         => throw new NotSupportedException();
 

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using OutlookMcpServer.Domain.Exceptions;
 using OutlookMcpServer.Domain.Models.Common;
 using OutlookMcpServer.Domain.Models.Mail;
 using OutlookMcpServer.Domain.Tests.Fakes;
@@ -168,5 +169,50 @@ public sealed class MailToolsTests
         var id = await tools.CreateDraft(subject: "D", body: "x", to: "a@x.com", importance: "low");
         Assert.Equal("DRAFT-1", id);
         Assert.Contains(svc.Calls, c => c.StartsWith(nameof(FakeOutlookService.CreateDraftAsync)));
+    }
+
+    // ===== Bulk-Get: get_mails =====
+
+    [Fact]
+    public async Task GetMails_DelegatesToService_WithIds()
+    {
+        var (tools, svc) = Create();
+        svc.SeedBulkMails(new[] { SampleData.Mail1(), SampleData.Mail2() });
+
+        var result = await tools.GetMails(
+            ids: new[] { "MAIL-1", "MAIL-2", "MAIL-MISSING" },
+            includeBody: true);
+
+        Assert.Equal(2, result.Value.Count);
+        Assert.Single(result.NotFoundIds);
+        Assert.Equal("MAIL-MISSING", result.NotFoundIds[0]);
+        Assert.Contains(svc.Calls, c => c.StartsWith(nameof(FakeOutlookService.GetMailsAsync)));
+    }
+
+    [Fact]
+    public async Task GetMails_DefaultIncludeBody_False()
+    {
+        var (tools, svc) = Create();
+        svc.SeedBulkMails(new[] { SampleData.Mail1() });
+
+        var result = await tools.GetMails(ids: new[] { "MAIL-1" });
+
+        Assert.Single(result.Value);
+        var call = svc.Calls.Single(c => c.StartsWith(nameof(FakeOutlookService.GetMailsAsync)));
+        Assert.Contains("includeBody=False", call);
+    }
+
+    [Fact]
+    public async Task GetMails_AllIdsMissing_ReturnsEmptyValueWithNotFound()
+    {
+        var (tools, svc) = Create();
+        svc.SeedBulkMails(Array.Empty<MailMessage>());
+
+        var result = await tools.GetMails(ids: new[] { "X-1", "X-2" });
+
+        Assert.Empty(result.Value);
+        Assert.Equal(2, result.NotFoundIds.Count);
+        Assert.Contains("X-1", result.NotFoundIds);
+        Assert.Contains("X-2", result.NotFoundIds);
     }
 }

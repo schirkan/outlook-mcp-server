@@ -37,6 +37,23 @@ public interface IOutlookService
         bool includeBody = true,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Liest mehrere Mails in einem Aufruf (Bulk-Variante von <c>get_mail</c>).
+    /// Vermeidet N round-trips wenn ein Client eine Liste EntryIDs (typischerweise
+    /// von <c>list_mails</c> oder <c>search_mails</c>) hat und zu jeder Mail
+    /// Body/Metadata braucht.
+    /// <para>
+    /// Einzelne ungueltige IDs werden NICHT als Exception propagiert, sondern
+    /// in <see cref="BulkMailResult.NotFoundIds"/> gelistet. Valides Empty-Result
+    /// wenn keine ID gefunden wurde. IDs werden vor dem Adapter-Aufruf dedupliziert
+    /// (Caller-Liste darf Duplikate enthalten).
+    /// </para>
+    /// </summary>
+    Task<BulkMailResult> GetMailsAsync(
+        IReadOnlyList<string> ids,
+        bool includeBody = false,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<InternetMessageHeader>> GetMailHeadersAsync(
         string id,
         CancellationToken cancellationToken = default);

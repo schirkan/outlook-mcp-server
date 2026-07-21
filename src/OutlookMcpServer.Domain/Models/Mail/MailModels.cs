@@ -277,3 +277,21 @@ public sealed record SendMailResult
     [JsonPropertyName("id")]
     public string? Id { get; init; }
 }
+
+/// <summary>
+/// Ergebnis von <c>getMails</c> (Bulk-Variante von <c>getMail</c>):
+/// gefundene Mails + EntryIDs die nicht aufloesbar waren.
+/// <para>
+/// Bulk-Semantik: einzelne ungueltige IDs schlagen NICHT fehl, sondern
+/// werden in <see cref="NotFoundIds"/> gelistet. Value enthaelt nur
+/// eindeutige Mails (falls Caller IDs dupliziert hat, wird dedupliziert).
+/// </para>
+/// </summary>
+public sealed record BulkMailResult
+{
+    [JsonPropertyName("value")]
+    public IReadOnlyList<MailMessage> Value { get; init; } = Array.Empty<MailMessage>();
+
+    [JsonPropertyName("notFoundIds")]
+    public IReadOnlyList<string> NotFoundIds { get; init; } = Array.Empty<string>();
+}

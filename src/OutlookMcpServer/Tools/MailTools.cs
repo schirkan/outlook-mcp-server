@@ -147,6 +147,17 @@ Hinweis: dies ist KEIN OData-Filter. Filter wie 'isRead eq false' oder 'received
         }
     }
 
+    [McpServerTool(Name = "get_mails")]
+    [Description("Liest mehrere Mails in einem Aufruf (Bulk-Variante von get_mail) — liefert { value: [...], notFoundIds: [...] }. Vermeidet N round-trips wenn Caller bereits eine ID-Liste hat (z. B. aus list_mails).")]
+    public async Task<BulkMailResult> GetMails(
+        [Description("Liste von Mail EntryIDs (1-50). Wird intern dedupliziert.")] string[] ids,
+        [Description("Body einlesen (Default false) — bei true nur wenn wirklich noetig (Performance/Cost).")] bool includeBody = false,
+        CancellationToken cancellationToken = default)
+    {
+        _logger.LogInformation("get_mails count={Count} includeBody={Inc}", ids?.Length ?? 0, includeBody);
+        return await _service.GetMailsAsync(ids ?? Array.Empty<string>(), includeBody, cancellationToken);
+    }
+
     [McpServerTool(Name = "get_mail_headers")]
     [Description("Liest Internet-Header einer Mail (From/Sender/To Header, Routing, DKIM etc.).")]
     public async Task<IReadOnlyList<InternetMessageHeader>> GetMailHeaders(

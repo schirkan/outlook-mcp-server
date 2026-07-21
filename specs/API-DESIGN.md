@@ -93,6 +93,44 @@ Tool-Eingaben sind JSON-Objekte; Tool-Ausgaben sind JSON-Objekte. Datums-/Zeit-W
 }
 ```
 
+### `getMails`
+
+**Beschreibung**: Bulk-Variante von `getMail` — liest mehrere Mails in einem
+Aufruf anhand ihrer EntryIDs. Vermeidet N round-trips wenn ein Client eine
+Liste von IDs hat (typischerweise von `listMails` oder `searchMails`) und
+zu jeder Mail den Body braucht.
+
+**Input**:
+- `ids` (string[], required, 1-50) — Liste von Mail EntryIDs; wird intern dedupliziert
+- `includeBody` (bool, default false) — bei true wird der Voll-Body mitgeladen (teuer; Production-Default ist false weil Body-Inhalt oft groß)
+
+**Output**:
+```json
+{
+  "value": [
+    { "id": "MAIL-1", "subject": "...", "body": { "contentType": "html", "content": "..." } },
+    { "id": "MAIL-2", "subject": "...", "body": null }
+  ],
+  "notFoundIds": ["MAIL-MISSING"]
+}
+```
+
+**Errors**:
+- `InvalidInput` — `ids` ist null, leer, größer als 50, oder enthält eine leere ID
+- **Keine per-ID-Errors** — nicht-aufloesbare IDs landen in `notFoundIds`
+  (Bulk-Semantik, analog zu Microsoft Graph Batch-Endpoints)
+
+**Implementation**: COM-Loop über IDs. Jede `Namespace.GetItemFromID(id, Type.Missing)`
+in eigenem try/catch. COMException → `notFound`-Liste, kein Throw. Deduplication
+der IDs vor dem Loop. Hard-Cap 50 (groesserer Caller soll weiterhin `list_mails`
++ iter paginieren).
+
+**Edge Cases**:
+- Alle IDs ungültig → `{ value: [], notFoundIds: [...] }` (kein Fehler)
+- `includeBody=true` mit Mail ohne HTML/Text-Body → `body: null` (analog `getMail`)
+- Doppelte IDs in der Anfrage → werden dedupliziert, Mail erscheint nur einmal in `value`
+- Reihenfolge: `value` folgt der Reihenfolge der Eingabe-IDs (post-Dedup)
+
 ### `getMailHeaders`
 
 **Input**: `id` (string, required)
@@ -459,6 +497,7 @@ Der MCP-Client braucht keine Type-Hints — `kind` im Response reicht zum Dispat
 | `GET /me/mailFolders/{id}` | `getMailFolder` | `Namespace.GetFolderFromID` |
 | `GET /me/mailFolders/{id}/messages` | `listMails` | `Folder.Items.Restrict` + Sort |
 | `GET /me/messages/{id}` | `getMail` | `Namespace.GetItemFromID` |
+| — | `getMails` (Bulk) | Loop `Namespace.GetItemFromID` per ID, nicht-aufloesbare IDs → `notFoundIds` |
 | `GET /me/messages/{id}/attachments` | `listAttachments` | `MailItem.Attachments` |
 | `POST /me/sendMail` | `sendMail` | `Application.CreateItem(olMailItem)` → `.Send()` |
 | `POST /me/messages` (draft) | `createDraft` | `Application.CreateItem(olMailItem)` → `.Save()` |

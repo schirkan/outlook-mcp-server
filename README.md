@@ -8,7 +8,7 @@ MCP-Server (Model Context Protocol) for accessing a **classic** Outlook installa
 
 ### Mail (read)
 - `list_mail_folders` / `get_mail_folder` — list + retrieve folders incl. well-known names (`inbox`, `drafts`, `sentItems`, `deletedItems`, `junkEmail`, `archive`, `outbox`)
-- `list_mails` / `get_mail` / `search_mails` — list/get mails with body, headers, attachments; full-text search over Subject + Body + Sender
+- `list_mails` / `get_mail` / `get_mails` (bulk) / `search_mails` — list/get/search mails with body, headers, attachments; bulk-get reads up to 50 EntryIDs in one call (returns `{ value, notFoundIds }`)
 - `get_mail_headers` — internet headers (From/To headers, DKIM, routing)
 - `list_attachments` / `get_attachment` — attachment summary + Base64-encoded content
 
@@ -319,8 +319,8 @@ The server returns Server-Sent Events with `data: {...}\n\n` per event.
               ||  MCP / JSON-RPC / stdio
 +-------------vv-------------+
 |  OutlookMcpServer (C#)     |
-|  - MailTools (14)           |
-|  - CalendarTools (12)       |
+|  - MailTools (16)           |
+|  - CalendarTools (9)        |
 |  - ActiveSelectionTools (2) |
 +-------------||-------------+
               ||  C# / COM-Interop (dynamic)

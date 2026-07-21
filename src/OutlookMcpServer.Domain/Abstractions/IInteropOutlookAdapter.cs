@@ -34,6 +34,17 @@ public interface IInteropOutlookAdapter
         bool includeBody = true,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// COM-Bulk-Mapping fuer <see cref="IOutlookService.GetMailsAsync"/>:
+    /// iteriert ueber IDs, ruft <c>Namespace.GetItemFromID</c> fuer jede.
+    /// Ungueltige IDs (COMException "ItemNotFound") werden in
+    /// <see cref="BulkMailResult.NotFoundIds"/> gesammelt.
+    /// </summary>
+    Task<BulkMailResult> GetMailsAsync(
+        IReadOnlyList<string> ids,
+        bool includeBody = false,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<InternetMessageHeader>> GetMailHeadersAsync(
         string id,
         CancellationToken cancellationToken = default);

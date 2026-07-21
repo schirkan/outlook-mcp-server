@@ -778,6 +778,47 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         }, nameof(GetMailAsync));
     }
 
+    public async Task<BulkMailResult> GetMailsAsync(
+        IReadOnlyList<string> ids,
+        bool includeBody = false,
+        CancellationToken cancellationToken = default)
+    {
+        await GetOutlookApplicationAsync(cancellationToken);
+        // Bulk-Operation: per-ID-Errors werden nicht als Top-Level-Exception geworfen,
+        // sondern in BulkMailResult.NotFoundIds gesammelt. Direkter Zugriff auf
+        // den MAPI-Namespace ohne RunComAsync-Wrap, weil wir jede COMException
+        // pro ID abfangen und nicht in OutlookServiceException umgewandelt haben wollen.
+        var ns = GetMapiNamespace();
+        var found = new List<MailMessage>(ids.Count);
+        var notFound = new List<string>();
+        foreach (var id in ids)
+        {
+            dynamic? mail = null;
+            try
+            {
+                mail = ns.GetItemFromID(id, Type.Missing);
+                found.Add(MapMailItem(mail, includeBody));
+            }
+            catch (COMException ex)
+            {
+                // Item nicht gefunden (MAPI_E_NOT_FOUND) oder andere COM-Fehler
+                // -> notFound-Liste. Bulk-Semantik ist per-ID-tolerant.
+                _logger.LogInformation(
+                    "GetMails: ID '{Id}' nicht aufloesbar (HResult=0x{HResult:X8}: {Msg})",
+                    id, ex.HResult, ex.Message);
+                notFound.Add(id);
+            }
+            finally
+            {
+                if (mail is not null)
+                {
+                    try { Marshal.ReleaseComObject(mail); } catch { /* defensive */ }
+                }
+            }
+        }
+        return new BulkMailResult { Value = found, NotFoundIds = notFound };
+    }
+
     public async Task<IReadOnlyList<InternetMessageHeader>> GetMailHeadersAsync(
         string id,
         CancellationToken cancellationToken = default)

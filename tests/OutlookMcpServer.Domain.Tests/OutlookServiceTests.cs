@@ -247,4 +247,64 @@ public sealed class OutlookServiceTests
         await svc.ListMailsRecursiveAsync(null!, top: 5);
         Assert.Contains(adapter.Calls, c => c.Contains("ListMailsRecursiveAsync") && c.Contains("scope="));
     }
+
+    // ===== Bulk-Get: get_mails Validation =====
+
+    [Fact]
+    public async Task GetMailsAsync_NullIds_ThrowsInvalidInput()
+    {
+        var svc = CreateService(new OutlookOptions(), new FakeInteropAdapter());
+        var ex = await Assert.ThrowsAsync<OutlookServiceException>(() =>
+            svc.GetMailsAsync(null!));
+        Assert.Equal(ErrorCode.InvalidInput, ex.Code);
+    }
+
+    [Fact]
+    public async Task GetMailsAsync_EmptyIds_ThrowsInvalidInput()
+    {
+        var svc = CreateService(new OutlookOptions(), new FakeInteropAdapter());
+        var ex = await Assert.ThrowsAsync<OutlookServiceException>(() =>
+            svc.GetMailsAsync(Array.Empty<string>()));
+        Assert.Equal(ErrorCode.InvalidInput, ex.Code);
+    }
+
+    [Fact]
+    public async Task GetMailsAsync_TooManyIds_ThrowsInvalidInput()
+    {
+        var svc = CreateService(new OutlookOptions(), new FakeInteropAdapter());
+        var ids = Enumerable.Range(0, 51).Select(i => $"M-{i}").ToArray();
+        var ex = await Assert.ThrowsAsync<OutlookServiceException>(() =>
+            svc.GetMailsAsync(ids));
+        Assert.Equal(ErrorCode.InvalidInput, ex.Code);
+    }
+
+    [Fact]
+    public async Task GetMailsAsync_EmptyEntryIdInList_ThrowsInvalidInput()
+    {
+        var svc = CreateService(new OutlookOptions(), new FakeInteropAdapter());
+        var ex = await Assert.ThrowsAsync<OutlookServiceException>(() =>
+            svc.GetMailsAsync(new[] { "M-1", "" }));
+        Assert.Equal(ErrorCode.InvalidInput, ex.Code);
+    }
+
+    [Fact]
+    public async Task GetMailsAsync_DuplicatesDeduplicated_BeforeAdapterCall()
+    {
+        var adapter = new FakeInteropAdapter();
+        var svc = CreateService(new OutlookOptions(), adapter);
+        await svc.GetMailsAsync(new[] { "M-1", "M-2", "M-1", "M-2" });
+        var entry = adapter.Calls.Single(c => c.StartsWith(nameof(OutlookMcpServer.Domain.Abstractions.IInteropOutlookAdapter.GetMailsAsync)));
+        Assert.Contains("count=2", entry); // 4 IDs -> 2 distinct
+    }
+
+    [Fact]
+    public async Task GetMailsAsync_HappyPath_CallsAdapterWithIncludeBody()
+    {
+        var adapter = new FakeInteropAdapter();
+        var svc = CreateService(new OutlookOptions(), adapter);
+        await svc.GetMailsAsync(new[] { "M-1" }, includeBody: true);
+        var entry = adapter.Calls.Single(c => c.StartsWith(nameof(OutlookMcpServer.Domain.Abstractions.IInteropOutlookAdapter.GetMailsAsync)));
+        Assert.Contains("count=1", entry);
+        Assert.Contains("includeBody=True", entry);
+    }
 }

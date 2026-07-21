@@ -75,6 +75,66 @@ public sealed class FakeOutlookService : IOutlookService
         throw new KeyNotFoundException(id);
     }
 
+    public Func<IReadOnlyList<string>, bool, IReadOnlyList<MailMessage>>? OnGetMails { get; set; }
+    private readonly Dictionary<string, MailMessage> _seededBulkMails = new();
+
+    public void SeedBulkMails(IEnumerable<MailMessage> mails)
+    {
+        foreach (var m in mails) _seededBulkMails[m.Id] = m;
+    }
+
+    public Task<BulkMailResult> GetMailsAsync(
+        IReadOnlyList<string> ids,
+        bool includeBody = false,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"{nameof(GetMailsAsync)}:count={ids.Count},includeBody={includeBody}");
+        ThrowIfInjected();
+        if (OnGetMails is not null)
+        {
+            return Task.FromResult(BuildBulkResultFromOverride(OnGetMails(ids, includeBody), ids));
+        }
+        return Task.FromResult(BuildBulkResultFromSeed(ids));
+    }
+
+    /// <summary>
+    /// Baut ein <see cref="BulkMailResult"/> wenn der Caller einen
+    /// <see cref="OnGetMails"/> Override registriert hat. Die Override-Methode
+    /// liefert nur die gefundenen Mails; alle nicht abgedeckten IDs wandern
+    /// in <c>notFoundIds</c>.
+    /// </summary>
+    private static BulkMailResult BuildBulkResultFromOverride(
+        IReadOnlyList<MailMessage> overrideResult,
+        IReadOnlyList<string> requestedIds)
+    {
+        var foundIds = overrideResult.Select(m => m.Id).ToHashSet(StringComparer.Ordinal);
+        var missing = requestedIds.Where(id => !foundIds.Contains(id)).ToList();
+        return new BulkMailResult { Value = overrideResult, NotFoundIds = missing };
+    }
+
+    /// <summary>
+    /// Default-Verhalten: iteriert ueber die (vom Service bereits deduplizierten)
+    /// IDs und schaut in <c>_seededBulkMails</c> nach. Gefundene landen in
+    /// <c>value</c>, nicht-gefundene in <c>notFoundIds</c>.
+    /// </summary>
+    private BulkMailResult BuildBulkResultFromSeed(IReadOnlyList<string> ids)
+    {
+        var found = new List<MailMessage>(ids.Count);
+        var missing = new List<string>();
+        foreach (var id in ids)
+        {
+            if (_seededBulkMails.TryGetValue(id, out var mail))
+            {
+                found.Add(mail);
+            }
+            else
+            {
+                missing.Add(id);
+            }
+        }
+        return new BulkMailResult { Value = found, NotFoundIds = missing };
+    }
+
     public Task<IReadOnlyList<InternetMessageHeader>> GetMailHeadersAsync(string id, CancellationToken cancellationToken = default)
     {
         Calls.Add($"{nameof(GetMailHeadersAsync)}:id={id}");

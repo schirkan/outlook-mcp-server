@@ -50,6 +50,44 @@ public enum ItemBodyType
 }
 
 /// <summary>
+/// Steuert das Format des Mail-Body, der vom Server an den Caller
+/// zurueckgegeben wird. Der native Outlook-Body ist immer HTML — der
+/// Server konvertiert bei Bedarf on-the-fly.
+/// <list type="bullet">
+///   <item><term>Markdown (default)</term><description>HTML → GitHub-kompatibles Markdown. Kompakt, gut lesbar fuer LLM-Caller.</description></item>
+///   <item><term>Text</term><description>HTML → Plain Text (Tags entfernt, Whitespace normalisiert). Maximal kompakt.</description></item>
+///   <item><term>Html</term><description>Outlook-Original-HTML (Word/Outlook-Styling, eingebettete CSS). Fuer Tabellen, Bilder, komplexe Layouts.</description></item>
+/// </list>
+/// </summary>
+public enum BodyFormat
+{
+    [JsonPropertyName("markdown")]
+    Markdown,
+
+    [JsonPropertyName("text")]
+    Text,
+
+    [JsonPropertyName("html")]
+    Html,
+}
+
+public static class BodyFormatExtensions
+{
+    /// <summary>Parst einen Caller-String (case-insensitive) zu <see cref="BodyFormat"/>.</summary>
+    public static BodyFormat ParseBodyFormat(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        null or "" => BodyFormat.Markdown,
+        "markdown" or "md" => BodyFormat.Markdown,
+        "text" or "plain" or "plaintext" => BodyFormat.Text,
+        "html" => BodyFormat.Html,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(value),
+            value,
+            "Unbekanntes bodyFormat. Erlaubt: 'markdown' (Default), 'text', 'html'."),
+    };
+}
+
+/// <summary>
 /// Generisches Pagination-Result. <c>NextSkip</c> ist null, wenn keine weiteren
 /// Seiten vorhanden sind (siehe <c>API-DESIGN.md</c> Pagination-Konvention).
 /// </summary>

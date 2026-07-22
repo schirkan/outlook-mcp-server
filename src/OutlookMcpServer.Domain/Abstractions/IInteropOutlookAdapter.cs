@@ -27,11 +27,13 @@ public interface IInteropOutlookAdapter
         int skip = 0,
         string? filter = null,
         string? search = null,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     Task<MailMessage> GetMailAsync(
         string id,
         bool includeBody = true,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -43,6 +45,7 @@ public interface IInteropOutlookAdapter
     Task<BulkMailResult> GetMailsAsync(
         IReadOnlyList<string> ids,
         bool includeBody = false,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<InternetMessageHeader>> GetMailHeadersAsync(
@@ -77,6 +80,7 @@ public interface IInteropOutlookAdapter
         IReadOnlyList<string> scope,
         int top,
         string? filter,
+        BodyFormat bodyFormat,
         CancellationToken cancellationToken = default);
 
     Task<SendMailResult> SendMailAsync(

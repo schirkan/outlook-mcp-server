@@ -59,26 +59,29 @@ public sealed class OutlookService : IOutlookService
         int skip = 0,
         string? filter = null,
         string? search = null,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
         ValidationHelpers.ValidateFolderId(folderId, nameof(folderId));
         ValidationHelpers.ValidateRange(top, 1, 100, nameof(top));
         ValidationHelpers.ValidateRange(skip, 0, int.MaxValue, nameof(skip));
-        return _adapter.ListMailsAsync(folderId, top, skip, filter, search, cancellationToken);
+        return _adapter.ListMailsAsync(folderId, top, skip, filter, search, bodyFormat, cancellationToken);
     }
 
     public Task<MailMessage> GetMailAsync(
         string id,
         bool includeBody = true,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
         ValidationHelpers.ValidateStringNotEmpty(id, nameof(id));
-        return _adapter.GetMailAsync(id, includeBody, cancellationToken);
+        return _adapter.GetMailAsync(id, includeBody, bodyFormat, cancellationToken);
     }
 
     public async Task<BulkMailResult> GetMailsAsync(
         IReadOnlyList<string> ids,
         bool includeBody = false,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
         if (ids is null)
@@ -96,7 +99,7 @@ public sealed class OutlookService : IOutlookService
         }
         // Deduplizieren: gleiche EntryID mehrfach -> nur einmal fetchen.
         var distinct = ids.Distinct(StringComparer.Ordinal).ToList();
-        return await _adapter.GetMailsAsync(distinct, includeBody, cancellationToken);
+        return await _adapter.GetMailsAsync(distinct, includeBody, bodyFormat, cancellationToken);
     }
 
     public Task<IReadOnlyList<InternetMessageHeader>> GetMailHeadersAsync(
@@ -141,6 +144,7 @@ public sealed class OutlookService : IOutlookService
         IReadOnlyList<string> scope,
         int top = 25,
         string? filter = null,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
         ValidationHelpers.ValidateRange(top, 1, 100, nameof(top));
@@ -165,7 +169,7 @@ public sealed class OutlookService : IOutlookService
                 }
             }
         }
-        return _adapter.ListMailsRecursiveAsync(scope ?? Array.Empty<string>(), top, filter, cancellationToken);
+        return _adapter.ListMailsRecursiveAsync(scope ?? Array.Empty<string>(), top, filter, bodyFormat, cancellationToken);
     }
 
     // ===== Mail: Mutationen =====

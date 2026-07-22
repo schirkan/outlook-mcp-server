@@ -137,16 +137,86 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     }
 
     /// <summary>Konvertiert einen Well-Known-Namen oder EntryID zu einem MAPIFolder-Objekt.</summary>
-    private dynamic GetFolderByIdOrWellKnownName(string folderIdOrName)
+    private dynamic? GetFolderByIdOrWellKnownName(string folderIdOrName)
     {
         var ns = GetMapiNamespace();
         var olFolderId = OlEnumMappings.ToOlDefaultFolder(folderIdOrName);
         if (olFolderId.HasValue)
         {
-            return ns.GetDefaultFolder(olFolderId.Value);
+            return ResolveDefaultFolderSmart(olFolderId.Value);
         }
         // Annahme: folderIdOrName ist eine EntryID
-        return ns.GetFolderFromID(folderIdOrName, Type.Missing);
+        try
+        {
+            return ns.GetFolderFromID(folderIdOrName, Type.Missing);
+        }
+        catch (COMException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Loest einen Well-Known-Folder per OlDefaultFolder-ID auf. In
+    /// Multi-Store-Profilen (z. B. Cached-Mode/Exchange + zusaetzliches PST)
+    /// liefert <c>ns.GetDefaultFolder(olId)</c> nicht zwingend den erwarteten
+    /// Folder — Outlook nummeriert die olIds je nach Store-Reihenfolge anders.
+    ///
+    /// Strategie (robust, sprach- und profilunabhaengig):
+    ///  1. Iteriere ueber <c>session.Stores</c> und versuche pro Store
+    ///     <c>store.GetDefaultFolder(olId)</c>. Der erste Store, der die ID
+    ///     unterstuetzt, gewinnt.
+    ///  2. Wenn kein Store den Well-Known-Folder enthaelt: Fallback auf
+    ///     <c>ns.GetDefaultFolder(olId)</c> (Originalverhalten).
+    ///
+    /// Liefert <c>null</c>, wenn nirgends etwas gefunden wurde.
+    /// </summary>
+    private dynamic? ResolveDefaultFolderSmart(int olFolderId)
+    {
+        // 1) session.Stores durchlaufen — Multi-Store-robust
+        try
+        {
+            dynamic ns = GetMapiNamespace();
+            dynamic session = ns.Session;
+            dynamic stores = session.Stores;
+            try
+            {
+                foreach (var store in stores)
+                {
+                    try
+                    {
+                        dynamic folder = store.GetDefaultFolder(olFolderId);
+                        if (folder is not null)
+                        {
+                            return folder;
+                        }
+                    }
+                    catch (COMException)
+                    {
+                        // Dieser Store kennt die olId nicht — naechster.
+                    }
+                }
+            }
+            finally
+            {
+                try { Marshal.ReleaseComObject(stores); } catch { }
+            }
+        }
+        catch
+        {
+            // session/Stores nicht verfuegbar — gleich zu Schritt 2.
+        }
+
+        // 2) Fallback: ns.GetDefaultFolder (Originalverhalten)
+        try
+        {
+            dynamic ns = GetMapiNamespace();
+            return ns.GetDefaultFolder(olFolderId);
+        }
+        catch (COMException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -204,11 +274,11 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     private record MailDates(DateTimeOffset? Sent, DateTimeOffset? Received);
     private record MailMetadata(bool HasAttachments, bool IsUnread, Importance Importance, List<string> Categories);
 
-    private static MailMessage MapMailItem(dynamic mail, bool includeBody, ILogger? logger = null)
+    private static MailMessage MapMailItem(dynamic mail, bool includeBody, BodyFormat bodyFormat, ILogger? logger = null)
     {
         var entryId = (string)mail.EntryID;
 
-        var body = TryMapMailBody(mail, includeBody, logger);
+        var body = TryMapMailBody(mail, includeBody, bodyFormat, logger);
         var from = TryMapMailFrom(mail);
         var recipients = TryMapMailRecipients(mail);
         var dates = TryMapMailDates(mail);
@@ -246,7 +316,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     /// fuer die spaerliche Body-Ausgabe).
     /// </para>
     /// </summary>
-    private static ItemBody? TryMapMailBody(dynamic mail, bool includeBody, ILogger? logger = null)
+    private static ItemBody? TryMapMailBody(dynamic mail, bool includeBody, BodyFormat bodyFormat, ILogger? logger = null)
     {
         if (!includeBody) return null;
         try
@@ -275,34 +345,53 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             {
                 logger?.LogWarning(htmlEx, "TryMapMailBody: Unerwarteter Fehler beim Lesen von Mail.HTMLBody");
             }
-            int fmt = 1;
-            try { fmt = (int)mail.BodyFormat; } catch { }
-            if (fmt == 2 && !string.IsNullOrEmpty(html))
+
+            // Native Outlook-Quelle priorisieren: HTML wenn vorhanden, sonst Text.
+            string? nativeSource = null;
+            if (!string.IsNullOrEmpty(html))
             {
-                return new ItemBody { ContentType = ItemBodyType.Html, Content = html };
+                nativeSource = html;
             }
-            if (!string.IsNullOrEmpty(text))
+            else if (!string.IsNullOrEmpty(text))
             {
-                return new ItemBody { ContentType = ItemBodyType.Text, Content = text };
+                nativeSource = text;
             }
-            // Body leer / nicht lesbar → Fallback auf BodyPreview,
-            // damit der Client wenigstens eine Vorschau bekommt.
-            try
+
+            // Konvertierung in das gewuenschte Zielformat.
+            // Bei Html-Request wird der native HTML durchgereicht (1:1).
+            // Bei Markdown/Text wird der native HTML konvertiert (auch wenn Outlook
+            // nur Text liefert: in diesem Fall wickelt der Converter in <html><body>).
+            if (nativeSource is null || nativeSource.Length == 0)
             {
-                var preview = (string?)mail.BodyPreview;
-                if (!string.IsNullOrEmpty(preview))
+                // Body leer / nicht lesbar → Fallback auf BodyPreview,
+                // damit der Client wenigstens eine Vorschau bekommt.
+                try
                 {
-                    logger?.LogInformation(
-                        "TryMapMailBody: Body leer, liefere BodyPreview als Fallback (len={Length})",
-                        preview.Length);
-                    return new ItemBody { ContentType = ItemBodyType.Text, Content = preview };
+                    var preview = (string?)mail.BodyPreview;
+                    if (!string.IsNullOrEmpty(preview))
+                    {
+                        logger?.LogInformation(
+                            "TryMapMailBody: Body leer, liefere BodyPreview als Fallback (len={Length})",
+                            preview.Length);
+                        return new ItemBody { ContentType = ItemBodyType.Text, Content = preview };
+                    }
                 }
+                catch (Exception previewEx)
+                {
+                    logger?.LogWarning(previewEx, "TryMapMailBody: BodyPreview ebenfalls nicht lesbar");
+                }
+                logger?.LogInformation("TryMapMailBody: Mail hat weder Body, HTMLBody noch BodyPreview");
+                return null;
             }
-            catch (Exception previewEx)
-            {
-                logger?.LogWarning(previewEx, "TryMapMailBody: BodyPreview ebenfalls nicht lesbar");
-            }
-            logger?.LogInformation("TryMapMailBody: Mail hat weder Body, HTMLBody noch BodyPreview");
+
+            // Wenn Outlook Text liefert und HTML gewuenscht ist, in HTML wrappen
+            // (selten, aber konsistent).
+            string htmlForConversion = nativeSource == text
+                ? $"<html><body><pre>{System.Net.WebUtility.HtmlEncode(text)}</pre></body></html>"
+                : nativeSource;
+
+            var (ct, content) = HtmlBodyConverter.Convert(htmlForConversion, bodyFormat);
+            return new ItemBody { ContentType = ct, Content = content };
         }
         catch (Exception ex)
         {
@@ -600,7 +689,14 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         await GetOutlookApplicationAsync(cancellationToken);
         return await RunComAsync(() =>
         {
-            dynamic folder = GetFolderByIdOrWellKnownName(folderId);
+            dynamic folder = GetFolderByIdOrWellKnownName(folderId)
+                ?? throw new OutlookServiceException(
+                    ErrorCode.FolderNotFound,
+                    $"Mail-Ordner nicht gefunden: '{folderId}'. " +
+                    "Bei Well-Known-Namen (inbox, drafts, sentItems, deletedItems, " +
+                    "junkEmail, archive, outbox) wird in Multi-Store-Profilen " +
+                    "unter allen Stores gesucht — falls keiner passt, ist der " +
+                    "Folder im aktiven Profil nicht vorhanden.");
             try
             {
                 return MapMailFolder(folder, null);
@@ -620,6 +716,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         int skip = 0,
         string? filter = null,
         string? search = null,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
         await GetOutlookApplicationAsync(cancellationToken);
@@ -628,7 +725,10 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             folderId, top, skip, filter, search);
         return await RunComAsync(() =>
         {
-            dynamic folder = GetFolderByIdOrWellKnownName(folderId);
+            dynamic folder = GetFolderByIdOrWellKnownName(folderId)
+                ?? throw new OutlookServiceException(
+                    ErrorCode.FolderNotFound,
+                    $"Mail-Ordner nicht gefunden: '{folderId}'.");
             string? folderName = null;
             try { folderName = (string)folder.Name; } catch { /* defensive */ }
             _logger.LogInformation(
@@ -714,7 +814,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                                 skippedNonMail++;
                                 continue;
                             }
-                            slice.Add(MapMailItem(item, false, _logger));
+                            slice.Add(MapMailItem(item, false, BodyFormat.Markdown, _logger));
                         }
                         catch (COMException mapEx)
                         {
@@ -761,6 +861,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     public async Task<MailMessage> GetMailAsync(
         string id,
         bool includeBody = true,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
         await GetOutlookApplicationAsync(cancellationToken);
@@ -769,7 +870,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             dynamic mail = GetMapiNamespace().GetItemFromID(id, Type.Missing);
             try
             {
-                return MapMailItem(mail, includeBody, _logger);
+                return MapMailItem(mail, includeBody, bodyFormat, _logger);
             }
             finally
             {
@@ -781,6 +882,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     public async Task<BulkMailResult> GetMailsAsync(
         IReadOnlyList<string> ids,
         bool includeBody = false,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
         await GetOutlookApplicationAsync(cancellationToken);
@@ -797,7 +899,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             try
             {
                 mail = ns.GetItemFromID(id, Type.Missing);
-                found.Add(MapMailItem(mail, includeBody));
+                found.Add(MapMailItem(mail, includeBody, bodyFormat));
             }
             catch (COMException ex)
             {
@@ -1038,7 +1140,10 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             }
             else
             {
-                dynamic folder = GetFolderByIdOrWellKnownName(folderId);
+                dynamic folder = GetFolderByIdOrWellKnownName(folderId)
+                    ?? throw new OutlookServiceException(
+                        ErrorCode.FolderNotFound,
+                        $"Mail-Ordner nicht gefunden: '{folderId}'.");
                 try
                 {
                     CollectMatchingMails(folder, query, slice, top,
@@ -1067,6 +1172,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         IReadOnlyList<string> scope,
         int top,
         string? filter,
+        BodyFormat bodyFormat,
         CancellationToken cancellationToken = default)
     {
         await GetOutlookApplicationAsync(cancellationToken);
@@ -1119,7 +1225,10 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                             name, ol.Value);
                         try
                         {
-                            folder = root.GetDefaultFolder(ol.Value);
+                            // Multi-Store-robust: iteriert session.Stores und nimmt
+                            // den ersten Store, der die olId unterstuetzt. Fallback
+                            // auf ns.GetDefaultFolder ist im Helper enthalten.
+                            folder = ResolveDefaultFolderSmart(ol.Value);
                         }
                         catch (Exception olEx)
                         {
@@ -1132,7 +1241,8 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                         if (folder is null)
                         {
                             _logger.LogWarning(
-                                "ListMailsRecursive GetDefaultFolder({Name}) lieferte null; uebersprungen",
+                                "ListMailsRecursive GetDefaultFolder({Name}) lieferte null " +
+                                "(kein Store enthaelt den erwarteten Folder-Namen); uebersprungen",
                                 name);
                             skippedFolders++;
                             continue;
@@ -1146,6 +1256,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                                 folder,
                                 filter,
                                 top,
+                                bodyFormat,
                                 collected,
                                 seen,
                                 ref visitedFolders,
@@ -1223,6 +1334,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         dynamic parent,
         string? filter,
         int top,
+        BodyFormat bodyFormat,
         List<(string EntryId, DateTime Received, MailMessage Msg)> collected,
         HashSet<string> seen,
         ref int visitedFolders,
@@ -1284,7 +1396,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                 }
                 if (restricted is not null)
                 {
-                    CollectItemsInto(restricted, top, collected, seen,
+                    CollectItemsInto(restricted, top, bodyFormat, collected, seen,
                         ref skippedNonMail, ref failedItems, ref restrictedItems);
                     try { Marshal.ReleaseComObject(restricted); } catch { }
                 }
@@ -1327,6 +1439,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                         sub,
                         filter,
                         top,
+                        bodyFormat,
                         collected,
                         seen,
                         ref visitedFolders,
@@ -1361,6 +1474,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     private void CollectItemsInto(
         dynamic items,
         int top,
+        BodyFormat bodyFormat,
         List<(string EntryId, DateTime Received, MailMessage Msg)> collected,
         HashSet<string> seen,
         ref int skippedNonMail,
@@ -1403,7 +1517,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                 MailMessage msg;
                 try
                 {
-                    msg = MapMailItem(item, false, _logger);
+                    msg = MapMailItem(item, false, BodyFormat.Markdown, _logger);
                 }
                 catch (COMException)
                 {
@@ -1500,7 +1614,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                     {
                         try
                         {
-                            slice.Add(MapMailItem(item, false, _logger));
+                            slice.Add(MapMailItem(item, false, BodyFormat.Markdown, _logger));
                             if (slice.Count >= top) return;
                         }
                         catch (COMException mapEx)
@@ -1815,7 +1929,10 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             dynamic mail = GetMapiNamespace().GetItemFromID(id, Type.Missing);
             try
             {
-                dynamic destFolder = GetFolderByIdOrWellKnownName(destinationFolderId);
+                dynamic destFolder = GetFolderByIdOrWellKnownName(destinationFolderId)
+                    ?? throw new OutlookServiceException(
+                        ErrorCode.FolderNotFound,
+                        $"Zielordner nicht gefunden: '{destinationFolderId}'.");
                 try
                 {
                     // MailItem.Move() gibt das verschobene Item zurueck (mit neuer EntryID).
@@ -1857,7 +1974,10 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                 dynamic copy = mail.Copy();
                 try
                 {
-                    dynamic destFolder = GetFolderByIdOrWellKnownName(destinationFolderId);
+                    dynamic destFolder = GetFolderByIdOrWellKnownName(destinationFolderId)
+                        ?? throw new OutlookServiceException(
+                            ErrorCode.FolderNotFound,
+                            $"Zielordner nicht gefunden: '{destinationFolderId}'.");
                     try
                     {
                         dynamic moved = copy.Move(destFolder);
@@ -2951,7 +3071,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         try { objectClass = (int)currentItem.Class; } catch { }
         return objectClass switch
         {
-            43 /* olMail */ => new ActiveMail { Item = MapMailItem(currentItem, true, logger) },
+            43 /* olMail */ => new ActiveMail { Item = MapMailItem(currentItem, true, BodyFormat.Markdown, logger) },
             26 /* olAppointment */ => new ActiveEvent { Item = MapAppointmentItem(currentItem) },
             _ => null,
         };
@@ -3015,7 +3135,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
 
                             ActiveItem? mapped = objectClass switch
                             {
-                                43 => new ActiveMail { Item = MapMailItem(item, true, _logger) },
+                                43 => new ActiveMail { Item = MapMailItem(item, true, BodyFormat.Markdown, _logger) },
                                 26 => new ActiveEvent { Item = MapAppointmentItem(item) },
                                 _ => null,
                             };

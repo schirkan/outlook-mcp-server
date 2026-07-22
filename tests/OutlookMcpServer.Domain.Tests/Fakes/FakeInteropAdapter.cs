@@ -24,21 +24,22 @@ public sealed class FakeInteropAdapter : IInteropOutlookAdapter
     public Task<MailFolder> GetMailFolderAsync(string folderId, CancellationToken cancellationToken = default)
         => throw new NotSupportedException("Adapter-Stub: not used in this test");
 
-    public Task<PagedResult<MailMessage>> ListMailsAsync(string folderId, int top = 25, int skip = 0, string? filter = null, string? search = null, CancellationToken cancellationToken = default)
+    public Task<PagedResult<MailMessage>> ListMailsAsync(string folderId, int top = 25, int skip = 0, string? filter = null, string? search = null, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
     {
         Calls.Add(nameof(ListMailsAsync));
         return Task.FromResult(new PagedResult<MailMessage> { Value = Array.Empty<MailMessage>() });
     }
 
-    public Task<MailMessage> GetMailAsync(string id, bool includeBody = true, CancellationToken cancellationToken = default)
+    public Task<MailMessage> GetMailAsync(string id, bool includeBody = true, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
         => throw new NotSupportedException();
 
     public Task<BulkMailResult> GetMailsAsync(
         IReadOnlyList<string> ids,
         bool includeBody = false,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(GetMailsAsync)}:count={ids.Count},includeBody={includeBody}");
+        Calls.Add($"{nameof(GetMailsAsync)}:count={ids.Count},includeBody={includeBody},bodyFormat={bodyFormat}");
         // Default: nichts gefunden, alle in notFoundIds. Caller-Tests koennen OnGetMails ueberschreiben
         // (Property existiert auf FakeOutlookService, hier nicht noetig — Service-Validation-Tests zaehlen nur Calls).
         return Task.FromResult(new BulkMailResult
@@ -69,9 +70,10 @@ public sealed class FakeInteropAdapter : IInteropOutlookAdapter
         IReadOnlyList<string> scope,
         int top,
         string? filter,
+        BodyFormat bodyFormat,
         CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(ListMailsRecursiveAsync)}:scope={string.Join(",", scope)},top={top},filter={filter ?? "(null)"}");
+        Calls.Add($"{nameof(ListMailsRecursiveAsync)}:scope={string.Join(",", scope)},top={top},filter={filter ?? "(null)"},bodyFormat={bodyFormat}");
         IReadOnlyList<MailMessage> items;
         if (OnListMailsRecursiveAsync is null)
         {
@@ -80,7 +82,7 @@ public sealed class FakeInteropAdapter : IInteropOutlookAdapter
         else
         {
             items = OnListMailsRecursiveAsync(new ListMailsRecursiveArgs(
-                new List<string>(scope), top, filter));
+                new List<string>(scope), top, filter, bodyFormat));
         }
         var slice = new List<MailMessage>(Math.Min(top, items.Count));
         for (int i = 0; i < items.Count && i < top; i++) slice.Add(items[i]);

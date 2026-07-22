@@ -46,9 +46,9 @@ public sealed class FakeOutlookService : IOutlookService
         throw new KeyNotFoundException(folderId);
     }
 
-    public Task<PagedResult<MailMessage>> ListMailsAsync(string folderId, int top = 25, int skip = 0, string? filter = null, string? search = null, CancellationToken cancellationToken = default)
+    public Task<PagedResult<MailMessage>> ListMailsAsync(string folderId, int top = 25, int skip = 0, string? filter = null, string? search = null, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(ListMailsAsync)}:folder={folderId},top={top},skip={skip},filter={filter},search={search}");
+        Calls.Add($"{nameof(ListMailsAsync)}:folder={folderId},top={top},skip={skip},filter={filter},search={search},bodyFormat={bodyFormat}");
         var query = _mails.Values.AsEnumerable();
         if (!string.IsNullOrWhiteSpace(search))
         {
@@ -62,9 +62,9 @@ public sealed class FakeOutlookService : IOutlookService
         });
     }
 
-    public Task<MailMessage> GetMailAsync(string id, bool includeBody = true, CancellationToken cancellationToken = default)
+    public Task<MailMessage> GetMailAsync(string id, bool includeBody = true, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(GetMailAsync)}:id={id},includeBody={includeBody}");
+        Calls.Add($"{nameof(GetMailAsync)}:id={id},includeBody={includeBody},bodyFormat={bodyFormat}");
         ThrowIfInjected();
         if (OnGetMail is not null)
         {
@@ -86,9 +86,10 @@ public sealed class FakeOutlookService : IOutlookService
     public Task<BulkMailResult> GetMailsAsync(
         IReadOnlyList<string> ids,
         bool includeBody = false,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(GetMailsAsync)}:count={ids.Count},includeBody={includeBody}");
+        Calls.Add($"{nameof(GetMailsAsync)}:count={ids.Count},includeBody={includeBody},bodyFormat={bodyFormat}");
         ThrowIfInjected();
         if (OnGetMails is not null)
         {
@@ -167,9 +168,10 @@ public sealed class FakeOutlookService : IOutlookService
         IReadOnlyList<string> scope,
         int top = 25,
         string? filter = null,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(ListMailsRecursiveAsync)}:scope={string.Join(",", scope)},top={top},filter={filter ?? "(null)"}");
+        Calls.Add($"{nameof(ListMailsRecursiveAsync)}:scope={string.Join(",", scope)},top={top},filter={filter ?? "(null)"},bodyFormat={bodyFormat}");
         // Default-Fake: leere Liste (Tests, die Inhalte brauchen, nehmen besser FakeInteropAdapter direkt).
         return Task.FromResult(new PagedResult<MailMessage> { Value = Array.Empty<MailMessage>(), NextSkip = null });
     }

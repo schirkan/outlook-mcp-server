@@ -84,6 +84,7 @@ namespace OutlookMcpServer.Domain.Serialization;
 [JsonSerializable(typeof(Importance))]
 [JsonSerializable(typeof(Sensitivity))]
 [JsonSerializable(typeof(ItemBodyType))]
+[JsonSerializable(typeof(BodyFormat))]
 [JsonSerializable(typeof(SelectionScope))]
 [JsonSerializable(typeof(Response))]
 [JsonSerializable(typeof(ShowAs))]

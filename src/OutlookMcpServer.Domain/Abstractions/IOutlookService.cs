@@ -30,11 +30,13 @@ public interface IOutlookService
         int skip = 0,
         string? filter = null,
         string? search = null,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     Task<MailMessage> GetMailAsync(
         string id,
         bool includeBody = true,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -52,6 +54,7 @@ public interface IOutlookService
     Task<BulkMailResult> GetMailsAsync(
         IReadOnlyList<string> ids,
         bool includeBody = false,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<InternetMessageHeader>> GetMailHeadersAsync(
@@ -83,6 +86,7 @@ public interface IOutlookService
         IReadOnlyList<string> scope,
         int top = 25,
         string? filter = null,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     // ===== Mail: Mutationen =====

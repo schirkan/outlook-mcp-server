@@ -46,6 +46,7 @@ Tool-Eingaben sind JSON-Objekte; Tool-Ausgaben sind JSON-Objekte. Datums-/Zeit-W
 - `skip` (int, default 0)
 - `filter` (optional, string): Outlook-DASL-Filter (z. B. `"@SQL=urn:schemas:httpmail:subject LIKE '%urgent%'"`)
 - `search` (optional, string): Volltext-Quicksearch über Subject + BodyPreview (Outlook-InstanteSearch)
+- `bodyFormat` (optional, string): Format des `MailMessage.body.content`. Erlaubte Werte: `markdown` (Default, kompakt, LLM-freundlich), `text` (Plain Text, maximal kompakt), `html` (Outlook-Original-HTML 1:1). Outlook speichert intern immer HTML — der Server konvertiert on-the-fly via `HtmlBodyConverter` (ReverseMarkdown-basiert).
 
 **Output**:
 ```json
@@ -72,7 +73,10 @@ Tool-Eingaben sind JSON-Objekte; Tool-Ausgaben sind JSON-Objekte. Datums-/Zeit-W
 
 ### `getMail`
 
-**Input**: `id` (string, required), `includeBody` (bool, default true)
+**Input**:
+- `id` (string, required)
+- `includeBody` (bool, default true) — bei `false` nur Header/Metadata zur Performance
+- `bodyFormat` (optional, string): Format des `MailMessage.body.content`. Erlaubte Werte: `markdown` (Default), `text`, `html`. Outlook speichert intern immer HTML — der Server konvertiert on-the-fly.
 **Output**:
 ```json
 {
@@ -103,6 +107,7 @@ zu jeder Mail den Body braucht.
 **Input**:
 - `ids` (string[], required, 1-50) — Liste von Mail EntryIDs; wird intern dedupliziert
 - `includeBody` (bool, default false) — bei true wird der Voll-Body mitgeladen (teuer; Production-Default ist false weil Body-Inhalt oft groß)
+- `bodyFormat` (optional, string): Format des Mail-Body. Erlaubte Werte: `markdown` (Default), `text`, `html`. Wirkt nur wenn `includeBody=true`.
 
 **Output**:
 ```json
@@ -199,6 +204,18 @@ Limit: `MaxAttachmentBytes` aus Config.
 **Input**: `query` (string, required), `folderId` (optional), `top` (default 25)
 **Output**: wie `listMails` (Advanced-Filter: DASL, alle Ordner wenn `folderId=null`)
 
+### `listMailsRecursive`
+
+**Beschreibung**: Listet Mails **rekursiv über mehrere Mail-Ordner und deren Unterordner**. Anders als `listMails` (nur ein Ordner) und `searchMails` (Subject/Sender-Textsuche) ist dieses Tool für **property-basierte Filter** über den gesamten Posteingangs-Bereich gedacht: `filter=[Unread] = true` liefert z. B. alle ungelesenen Mails in Inbox + Archiv + allen anderen gewählten Scopes, inkl. Unterordner. Multi-Store-Profile (Cached-Mode/Exchange + PST) werden via `ResolveDefaultFolderSmart`-Helper korrekt aufgelöst. Class-43-Filter (nur `olMail`), EntryID-basierte Deduplikation, Hard-Cap bei `top`.
+
+**Input**:
+- `scope` (optional, string): Komma-Liste der Well-Known-Mailordner. Erlaubte Werte: `inbox, drafts, sentItems, deletedItems, junkEmail, archive, outbox`. Leer/Null = alle Mail-Ordner des Profils. Beispiel: `inbox,archive` durchsucht nur Posteingang + Archiv (jeweils rekursiv).
+- `top` (int, default 25, max 100): Hard-Cap; keine Pagination. Bei mehr Treffern wird nach ReceivedTime DESC auf `top` limitiert; ältere Mails gehen verloren.
+- `filter` (optional, string): DASL-Filterausdruck, wird an Outlook `Items.Restrict()` weitergereicht. Bei ungültiger Syntax Fallback auf ungefilterte Iteration pro Folder (Warnung im Server-Log). Häufig genutzte Properties: `[Unread]` (boolean, ACHTUNG: nicht `[UnRead]`!), `[Importance]` (0=Low, 1=Normal, 2=High), `[HasAttachments]` (boolean), `[ReceivedTime]` (datetime, US-Format `M/d/yyyy h:mm:ss tt`). Der Server normalisiert `[UnRead]` automatisch zu `[Unread]` — beides funktioniert.
+- `bodyFormat` (optional, string): Format des Mail-Body. Erlaubte Werte: `markdown` (Default), `text`, `html`.
+
+**Output**: wie `listMails` (`PagedResult<MailMessage>`)
+
 ## Kalender
 
 ### `listCalendars`
@@ -233,6 +250,7 @@ Limit: `MaxAttachmentBytes` aus Config.
 - `top` (int, default 50, max 250)
 - `skip` (int, default 0)
 - `filter` (optional, string): z. B. `"showAs eq 'busy'"` (einfache Equality-Filter, intern auf DASL gemappt)
+- `bodyFormat` (optional, string): Format des `CalendarEvent.body.content`. Erlaubte Werte: `markdown` (Default), `text`, `html`. Calendar verwendet denselben `HtmlBodyConverter` wie Mail — verhindert Word/Outlook-Styling-Bloat bei LLM-Consumern.
 
 **Output**:
 ```json
@@ -265,7 +283,9 @@ Limit: `MaxAttachmentBytes` aus Config.
 
 ### `getEvent`
 
-**Input**: `id`
+**Input**:
+- `id` (string, required)
+- `bodyFormat` (optional, string): Format des Termin-Body. Erlaubte Werte: `markdown` (Default), `text`, `html`.
 **Output**: einzelnes Event (Properties wie oben + `body`, `hasAttachments`, `recurrence`)
 
 ### `createEvent`
@@ -335,7 +355,8 @@ Wichtig: alle diese Tools sind **read-only auf den UI-State**. Sie öffnen oder 
 
 **Beschreibung**: Liefert das Item, das aktuell im Vordergrund-Inspector-Fenster offen ist (Doppelklick auf eine Mail / einen Termin). Ein typischer Use-Case: „Fasse die Mail zusammen, die ich gerade offen habe" oder „lege einen Folgetermin an, basierend auf dem Termin, der gerade offen ist".
 
-**Input**: (keine)
+**Input**:
+- `bodyFormat` (optional, string): Format des Mail-Body. Erlaubte Werte: `markdown` (Default), `text`, `html`. Wirkt nur auf `ActiveMail` — `ActiveEvent` (AppointmentItem) hat keinen Body.
 
 **Output** (polymorph, diskriminiert via `kind`):
 ```json
@@ -368,6 +389,7 @@ return current switch
 **Input**:
 - `scope` (optional, string, default `"any"`): `"mail"` | `"calendar"` | `"any"` — filtert auf Item-Typen.
 - `top` (optional, int, default 50, max 250): harte Obergrenze, schützt vor zu großen Selection-Batches.
+- `bodyFormat` (optional, string): Format des Mail-Body. Erlaubte Werte: `markdown` (Default), `text`, `html`. Wirkt nur auf enthaltene `ActiveMails`.
 
 **Output**:
 ```json

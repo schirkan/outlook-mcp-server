@@ -42,3 +42,83 @@ Vollstaendige Begruendung pro Code-Stelle:
 - [src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs) — `ListMailsRecursiveAsync` (Entry-Punkt), `CollectMailsFromFolderRecursive` (Rekursion), `CollectItemsInto` (per-Item-Mapping).
 - [src/OutlookMcpServer.Domain/Models/Mail/MailModels.cs](src/OutlookMcpServer.Domain/Models/Mail/MailModels.cs) — `WellKnownFolder.MailFolderNames` + `IsKnownMailFolder(name)`.
 - [src/OutlookMcpServer.Domain/Services/OutlookService.cs](src/OutlookMcpServer.Domain/Services/OutlookService.cs) — `ListMailsRecursiveAsync` mit Validation.
+
+## 2026-07-22 — `fix recursive` (`f90aa05`)
+
+Status: accepted
+
+Kontext: `OutlookInteropAdapter.GetActiveItemAsync` und verwandte rekursive Active-Selection-Pfade hatten ein Edge-Case-Polymorphie-Problem in der Source-Generation-JSON-Serialisierung. Konkret: `ActiveMail` und `ActiveEvent` werden via `JsonDerivedType`-Attribute diskriminiert — die Polymorphie-Aufloesung im Source-Generator brauchte explizite Registrierung im `OutlookMcpJsonContext`, sonst fehlte die TypeInfoMetadata und Serialisierung scheiterte still.
+
+Entscheidung: `OutlookMcpJsonContext` in `src/OutlookMcpServer.Domain/Serialization/OutlookMcpJsonContext.cs` erweitert um explizite Registrierung der polymophen Typen via `[JsonSerializable(typeof(...))]`. `OutlookInteropAdapter.GetActiveItemAsync` auf den CallSite-Pfad umgestellt (vorher Reflection, das bei `__ComObject`-RCW-Objekten nicht zuverlaessig funktionierte).
+
+Konsequenzen:
+- Polymorphe Serialisierung von `ActiveItem`-Varianten jetzt zuverlaessig (vorher: `NotSupportedException` bei `GetActiveItem` mit MailItem).
+- Kleinere Refactorings in `OutlookInteropAdapter` (Reflection → CallSite, der von `6b053ed` etablierte Pfad).
+
+Vollstaendige Begruendung pro Code-Stelle:
+- [src/OutlookMcpServer.Domain/Serialization/OutlookMcpJsonContext.cs](src/OutlookMcpServer.Domain/Serialization/OutlookMcpJsonContext.cs) — explizite `[JsonSerializable(typeof(ActiveItem))]`-Registrierung.
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs) — `GetActiveItemAsync` auf CallSite-Pfad umgestellt (statt Reflection-`GetType().GetProperty()`).
+
+## 2026-07-22 — BodyFormat + Multi-Store Folder-Resolve + UnRead-Alias (`24e4e46`)
+
+Status: accepted
+
+Kontext: Drei Sub-Themen, alle am 2026-07-22 20:43 in einem Commit:
+
+1. **BodyFormat-Enum + HtmlBodyConverter**: Vor diesem Commit hat der Server Outlook-HTML 1:1 durchgereicht (gleiches Problem fuer Mail UND Calendar). Bei LLM-Consumern fuehrte das zu Word/Outlook-Styling-Bloat (CSS-Inline, Class-Attribute, conditional comments), was Tokens verschwendet und die Lesbarkeit verschlechtert. HTML → Plain-Text ohne Struktur war auch nicht ideal (Listen, Tabellen, Code-Blocks gingen verloren).
+2. **Multi-Store Folder-Resolve**: In Multi-Store-Profilen (Cached-Mode/Exchange + PST) liefert `session.GetDefaultFolder(olDefaultFolders.X)` nicht zwingend den kanonischen Folder. Beispiel: Ein Profil mit Cached Exchange + lokalem PST kann `olFolderInbox` auf den PST-Inbox mappen, nicht den Exchange-Inbox. Das fuehrte zu Scope-vs-Ordner-Mismatch bei `list_mails_recursive`: der User wollte Exchange-Inbox, bekam aber PST-Inbox, oder umgekehrt.
+3. **UnRead-Alias-Normalisierung**: Outlook-DASL-Filter ist case-sensitive. User schrieben `[UnRead] = true` (PascalCase), Outlook akzeptiert aber nur `[Unread]` (lowercase 'r'). Resultat: `Items.Restrict("[UnRead] = true")` lieferte leeres Resultat, weil das Property `[UnRead]` nicht existiert — Outlooks echtes Property ist `[Unread]`. Still: die Filter fielen auf ungefilterte Iteration zurueck und gaben ALLE Mails zurueck, nicht nur ungelesene.
+
+Entscheidung:
+1. **BodyFormat**: Neuer interner Komponent `HtmlBodyConverter` (`src/OutlookMcpServer.Interop/HtmlBodyConverter.cs`) basiert auf ReverseMarkdown 3.7.0. Konvertiert Outlook-HTML zu GitHub-kompatibles Markdown. Neues Enum `BodyFormat` (`markdown`|`text`|`html`) in `CommonModels.cs` mit `BodyFormatExtensions.ParseBodyFormat`-Helper fuer case-insensitive String-Parsing (erlaubte Werte: `markdown`, `md`, `text`, `plain`, `plaintext`, `html`). Default fuer alle Tools = `markdown` (kompakt, gut lesbar fuer LLMs). Calendar verwendet denselben Konverter — verhindert das gleiche Styling-Bloat-Problem bei Termin-Body.
+2. **Multi-Store**: Neuer Helper `ResolveDefaultFolderSmart(olId)` in `OutlookInteropAdapter`. Iteriert ueber `session.Stores[*].GetDefaultFolder(olId)` und nimmt den ersten Store, der die olId kennt. So bekommt man immer den kanonischen Default-Folder des ersten passenden Stores — was typischerweise der Cached-Exchange-Store ist.
+3. **UnRead-Alias**: Server-seitige Normalisierung in `OutlookService.ListMailsRecursiveAsync`: vor dem `Items.Restrict(filter)`-Aufruf wird `[UnRead]` zu `[Unread]` ersetzt. Caller koennen beide Schreibweisen verwenden, der Server macht den Normalisierungs-Pass.
+
+Alternativen (verworfen):
+- BodyFormat: Eigenbau HTML-Parser (fehleranfaellig, viel Wartungsaufwand fuer Edge-Cases), HtmlAgilityPack + manuelle Konvertierung (zusaetzliche Dependency, weniger robust gegen Outlook-spezifische HTML-Idiosynkrasien), nur Plain-Text (Listen/Tabellen/Code-Blocks gehen verloren).
+- Multi-Store: Konfigurierbarer Default-Store (zu frueh fuer v1, spaeter konfigurierbar machen in v1.1 wenn Use-Cases auftauchen).
+- UnRead-Alias: Caller auf korrekte Schreibweise hinweisen (UX-schlecht, User merkt sich nicht welche korrekt ist), case-insensitive DASL-Property-Lookup (Outlook-intern nicht zuverlaessig).
+
+Konsequenzen:
+- Neuer interner File `src/OutlookMcpServer.Interop/HtmlBodyConverter.cs` (~91 LOC).
+- Dependency: ReverseMarkdown 3.7.0 (NuGet).
+- Calendar verwendet jetzt denselben Konverter wie Mail (vorher: HTML 1:1 durchgereicht, gleiche Word-Styling-Bloat-Problem).
+- `list_mails_recursive` mit scope=[inbox,archive] funktioniert jetzt korrekt in Multi-Store-Profilen.
+- API-DESIGN.md: expliziter Hinweis auf `[Unread]` (lowercase 'r', ACHTUNG: nicht `[UnRead]!`), Der Server normalisiert `UnRead` automatisch — beides funktioniert.
+- `BodyFormat` und `string[]` als `[JsonSerializable(typeof(...))]` im `OutlookMcpJsonContext` registriert (Source-Gen-Polymorphie-Support).
+
+Vollstaendige Begruendung pro Code-Stelle:
+- [src/OutlookMcpServer/Tools/MailTools.cs](src/OutlookMcpServer/Tools/MailTools.cs) — `bodyFormat`-Parameter an `list_mails` + Logging der BodyFormat-Konvertierung.
+- [src/OutlookMcpServer/Tools/CalendarTools.cs](src/OutlookMcpServer/Tools/CalendarTools.cs) — Calendar-Body via `HtmlBodyConverter.Convert()` statt 1:1 HTML durchreichen.
+- [src/OutlookMcpServer.Interop/HtmlBodyConverter.cs](src/OutlookMcpServer.Interop/HtmlBodyConverter.cs) — neuer File, ~91 LOC, ReverseMarkdown-Wrapper.
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs) — `ResolveDefaultFolderSmart`-Helper, `HtmlBodyConverter.Convert()`-Integration in `MapMailItem`/`MapAppointmentItem`, `TryMapMailRecipients`-Fix (siehe naechster Eintrag).
+- [src/OutlookMcpServer.Domain/Models/Common/CommonModels.cs](src/OutlookMcpServer.Domain/Models/Common/CommonModels.cs) — `BodyFormat`-Enum + `BodyFormatExtensions`-Helper.
+- [src/OutlookMcpServer.Domain/Services/OutlookService.cs](src/OutlookMcpServer.Domain/Services/OutlookService.cs) — UnRead-Alias-Normalisierung in `ListMailsRecursiveAsync`.
+- [src/OutlookMcpServer.Domain/Serialization/OutlookMcpJsonContext.cs](src/OutlookMcpServer.Domain/Serialization/OutlookMcpJsonContext.cs) — `BodyFormat` + `string[]` Source-Gen-Registrierung.
+
+## 2026-07-22 — `bodyFormat`-Tool-Parameter + Recipients-Type-Filter (`df11443`)
+
+Status: accepted
+
+Kontext: BodyFormat-Konvertierung (aus `24e4e46`) sollte nicht nur intern wirken, sondern auch vom MCP-Caller explizit steuerbar sein — verschiedene Use-Cases brauchen verschiedene Formate (LLM-Caller bevorzugen Markdown, Mobile-Clients vielleicht HTML, Text-Exporte Plain). Ausserdem: Outlook-MAPI-MailItems haben keine separaten `To`/`CC`/`BCC`-Properties — nur eine `Recipients`-Collection mit `.Type` pro Element (2=To, 3=CC, 4=BCC, 1=Originator). Der vorherige Versuch, `mail.To`/`mail.CC`/`mail.BCC` per IDispatch zu lesen, lieferte daher leere Arrays — Recipients-Sortierung ging verloren.
+
+Entscheidung: `bodyFormat`-Parameter als expliziter Tool-Input an acht Tools exponiert: `list_mails`, `get_mail`, `get_mails`, `list_mails_recursive` (Mail); `get_event`, `list_events` (Calendar); `get_active_item`, `get_selected_items` (ActiveMail-Teil — wirkt nur auf Mails, nicht auf Termine). Default = `markdown` (kompakt, LLM-freundlich). `TryMapMailRecipients` liest einmal `mail.Recipients` und filtert nach `.Type` (2=To, 3=CC, 4=BCC).
+
+Alternativen (verworfen):
+- `bodyFormat` als Domain-DTO-Feld (in `MailMessage`/`CalendarEvent`): verwischt Layer-Trennung — Domain bleibt 1:1 zu Microsoft Graph (`ItemBody`-DTO), Format-Konvertierung ist Tool-Layer-Concern.
+- Recipients-Sortierung via `mail.To`/`mail.CC`/`mail.BCC` Reflection: liefert leere Arrays (Reflection funktioniert nicht fuer `System.__ComObject`-RCW mit IDispatch-Properties — derselbe Bug wie in `6b053ed`).
+
+Konsequenzen:
+- Tool-Signaturen: 8 Tools bekommen zusaetzlichen `bodyFormat`-Parameter (string?, default null → Default `markdown`).
+- Production-Default `markdown` weil LLM-Caller typischerweise Markdown-Body bevorzugen.
+- `ToRecipients`/`CcRecipients`/`BccRecipients` in `MailMessage`-DTO jetzt korrekt befuellt (vorher: leer).
+- Tool-Count bleibt **27** (keine neuen Tools, nur Parameter-Erweiterungen).
+- API-DESIGN.md: `bodyFormat`-Parameter in 8 Tool-Sections dokumentiert + neuer Enum `BodyFormat`.
+
+Vollstaendige Begruendung pro Code-Stelle:
+- [src/OutlookMcpServer/Tools/MailTools.cs](src/OutlookMcpServer/Tools/MailTools.cs) — `bodyFormat`-Parameter an `list_mails`, `get_mail`, `get_mails`, `list_mails_recursive`.
+- [src/OutlookMcpServer/Tools/CalendarTools.cs](src/OutlookMcpServer/Tools/CalendarTools.cs) — `bodyFormat`-Parameter an `list_events`, `get_event`.
+- [src/OutlookMcpServer/Tools/ActiveSelectionTools.cs](src/OutlookMcpServer/Tools/ActiveSelectionTools.cs) — `bodyFormat`-Parameter an `get_active_item`, `get_selected_items` (nur Mail-Teil; ActiveEvent hat keinen Body).
+- [src/OutlookMcpServer.Domain/Abstractions/IOutlookService.cs](src/OutlookMcpServer.Domain/Abstractions/IOutlookService.cs) — `bodyFormat`-Parameter auf 8 Service-Methoden.
+- [src/OutlookMcpServer.Domain/Abstractions/IInteropOutlookAdapter.cs](src/OutlookMcpServer.Domain/Abstractions/IInteropOutlookAdapter.cs) — `bodyFormat`-Parameter auf 8 Interop-Methoden.
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs) — `TryMapMailRecipients` liest einmal `mail.Recipients` und filtert nach `.Type` (2=To, 3=CC, 4=BCC).

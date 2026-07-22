@@ -73,7 +73,7 @@ dotnet publish src/OutlookMcpServer/OutlookMcpServer.csproj \
   -p:PublishProfile=src/OutlookMcpServer/Properties/PublishProfiles/minimal.pubxml
 ```
 
-Output: `src/OutlookMcpServer/bin/Release/net8.0-windows/win-x64/publish/OutlookMcpServer.exe` (~17.7 MB compressed single-file, includes .NET runtime, no install needed on target).
+Output: `src/OutlookMcpServer/bin/Release/net8.0-windows/win-x64/publish/OutlookMcpServer.exe` (~44.94 MB compressed single-file, includes .NET runtime, no install needed on target). PublishTrimmed=false (COM-Aktivierung würde sonst blockieren — siehe DECISIONS.md 2026-07-21).
 
 ## Configuration
 

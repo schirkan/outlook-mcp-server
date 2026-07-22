@@ -79,7 +79,7 @@ Vision & Scope: siehe [`specs/VISION.md`](specs/VISION.md).
 - [x] **Echte COM-Interop-Impl** (Karte 3.5) — alle 26 Methoden implementiert (24 Mail/Calendar + 2 Active-Selection), 0 verbleibende `NotImplementedException`
 - [x] **Bulk-Get `get_mails`** (Bulk-Variante von `get_mail`) — neues MCP-Tool liest 1-50 EntryIDs in einem Aufruf, liefert `{ value: [...], notFoundIds: [...] }` (Bulk-Semantik, einzelne ungültige IDs landen in `notFoundIds`). 11 neue Tests (5 Tool + 6 Service-Validation: null/empty/too-many/empty-id/dedup/happy-path). Code-Schicht: Model + Interop-Adapter (COM-Loop mit per-ID-try/catch) + Service (Validation 1-50 + Dedup) + Tool (CSV-frei, JSON-Array-IDs) + Fakes. Dokumentiert in `specs/API-DESIGN.md` (`### getMails`) + Mapping-Tabelle. Production-Default `includeBody=false` weil Body-Inhalt oft groß.
 - [x] **CI/CD-Pipeline Hardening + Push-Force-Pattern** — Martins Commits 6b053ed (CallSite-Pattern), 4149bc2 (list_mails_recursive), d8ea89e (PublishTrimmed=false), 22479dc (Logging) waren zwischen meinem letzten Push und dieser Session auf origin/main gelandet. Mein Bulk-Get-Commit wurde via `git rebase origin/main` integriert (9/10 Files auto-merged, einziger Konflikt `tests/.../OutlookServiceTests.cs` in der Test-Klasse gelöst via `git checkout --theirs` + manuellem Anhängen von Martins 5 ListMailsRecursive-Tests vor meinen 6 GetMails-Tests). Rebase-Commit `872ebfb` mit korrigierter `--force-with-lease`-Push. Backup-Branch `backup-get-mails` (Original `feb387b`) bleibt bis zur Bestätigung als Rollback-Safety erhalten.
-- [x] **Publish-Profil `minimal.pubxml`** — Self-Contained + Single-File + Trim(partial) + Compression + Embedded-PDB + InvariantGlobalization → 17,7 MB exe
+- [x] **Publish-Profil `minimal.pubxml`** — Self-Contained + Single-File + Compression + Embedded-PDB + InvariantGlobalization → **44,94 MB exe** (PublishTrimmed=false per `d8ea89e` — `BuiltInComInterop.IsSupported=false` unter Trimmed blockiert sonst COM-Aktivierung)
 - [x] **Integration-Tests Projekt-Skelett** (Karte 7) — `tests/OutlookMcpServer.IntegrationTests/` mit SkippableFact + Outlook-DetectOutlook (5s-Task-Wait-Timeout gegen COM-Haenger) + 6 Beispiel-Tests (3 MailFolder + 3 Calendar). Vollständige Test-Suite (send/create/respond/delete mit Cleanup) + lokale Verifikation durch Martin stehen aus.
 - [x] **README erweitert** (Karte 8) — Features v1 / Quick Start (Build/Test/Publish) / Configuration (appsettings.json + Allow*-Flags-Tabelle) / Transport (stdio + HTTP/SSE-Loopback) / MCP-Client-Setup (Claude Desktop, Cline, Continue.dev) / Architecture (3-Layer + ASCII-Diagramm) / Development (Project-Structure + Add-a-new-MCP-Tool-Workflow) / Roadmap / License
 - [x] **Beispiel-Configs `examples/`** (Karte 9) — separate JSON-Files für Copy-Paste (`claude-desktop-config.json`, `cline-mcp-settings.json`, `appsettings.http.json`, `appsettings.readonly.json` + `examples/README.md`)
@@ -112,9 +112,9 @@ Zwei separate Workflows in `.github/workflows/`:
   - Trigger: `push` auf Tag-Match `v[0-9]+.[0-9]+.[0-9]+` (z. B. `v1.0.0`, `v1.0.1`, `v2.0.0`)
   - Pre-Release-Tags (z. B. `v1.0.0-rc.1`, `v1.0.0-beta.2`) werden via `prerelease`-Expression auto-markiert
   - Runner: `windows-latest`, .NET SDK aus `global.json`
-  - Steps: checkout (full history) → setup-dotnet (**kein** NuGet-Cache, siehe "Cache-Status" unten) → restore → publish mit `minimal.pubxml` (Self-Contained + Single-File + Trim partial + Compression) → Zip → Upload-Artifact → GitHub-Release (mit auto-generierten Notes aus Commits seit letztem Tag)
+  - Steps: checkout (full history) → setup-dotnet (**kein** NuGet-Cache, siehe "Cache-Status" unten) → restore → publish mit `minimal.pubxml` (Self-Contained + Single-File + Compression) → Zip → Upload-Artifact → GitHub-Release (mit auto-generierten Notes aus Commits seit letztem Tag)
   - Permissions: `contents: write` (fuer `gh release create`)
-  - Artifact: `outlook-mcp-server-${{ github.ref_name }}.zip` (OutlookMcpServer.exe ~17.7 MB + pdb + aspnetcorev2_inprocess.dll)
+  - Artifact: `outlook-mcp-server-${{ github.ref_name }}.zip` (OutlookMcpServer.exe ~44.94 MB + pdb + aspnetcorev2_inprocess.dll)
 
 - **Workflow manuell triggern** (zum Testen ohne Push):
   - GitHub UI: `Actions`-Tab → Workflow auswaehlen → `Run workflow`
@@ -134,7 +134,7 @@ Zwei separate Workflows in `.github/workflows/`:
 
 - **Pipeline-Status (Live, nach erstem v0.1.0 Release):**
   - Erste gepublishte GitHub-Release: **[v0.1.0](https://github.com/schirkan/outlook-mcp-server/releases/tag/v0.1.0)** — ausgeloest durch `git push origin v0.1.0` (Tag-Trigger fuer `release.yml`)
-  - Asset: `outlook-mcp-server.zip` (OutlookMcpServer.exe ~17,7 MB Self-Contained Single-File + pdb + aspnetcorev2_inprocess.dll)
+  - Asset: `outlook-mcp-server.zip` (OutlookMcpServer.exe ~44,94 MB Self-Contained Single-File + pdb + aspnetcorev2_inprocess.dll)
   - Release-Run-Dauer (Run [29724649418](https://github.com/schirkan/outlook-mcp-server/actions/runs/29724649418)): **~116s (1,9 min)** auf windows-latest
   - CI-Laufzeit (nach Cache-Fix 5bafc3e): **~68s** auf windows-latest
   - Tag-zu-Release-Zeit gesamt: ~2 min (Tag-Push → GitHub Release published + Asset verfuegbar)
@@ -144,6 +144,21 @@ Zwei separate Workflows in `.github/workflows/`:
   - Beide Workflows (`ci.yml` + `release.yml`) nutzen **kein** `cache: true` auf `actions/setup-dotnet@v4`. Grund: die Action verlangt eine `packages.lock.json`, die unser Repo (noch) nicht hat — mit `cache: true` wirft die Action "Dependencies lock file is not found", Restore/Build/Tests werden gar nicht erreicht (Fruehausstieg nach ~45s).
   - **Workaround (Commit 5bafc3e):** `cache: true` entfernt, Inline-Kommentar in beiden Workflow-Files erklaert das Trade-off. NuGet-Restore ohne Cache ist ~10-20s langsamer pro CI-/Release-Lauf, fuer unsere Projektgroesse vernachlaessigbar.
   - **Saubere Loesung (Roadmap):** Central Package Management (CPM) via `Directory.Packages.props` aktivieren + `<RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>` in jedem csproj setzen + `dotnet restore --use-lock-file` einmal lokal ausfuehren → generiert `packages.lock.json` pro Projekt. Danach kann `cache: true` in beiden Workflows wieder aktiviert werden, ohne die Cache-Key-Findungs-Failure. Folge-Schritt, kein Dringlichkeits-Bedarf.
+
+## Letzte Commits (2026-07-21)
+
+Vier Commits von Martin am 2026-07-21 zwischen den letzten Pushes aus älteren Sessions auf `origin/main` gelandet — hiermit in der Doku nachgeholt:
+
+- **`22479dc`** (2026-07-21 18:46) — **Logging**: `FileLoggerProvider` (optional zuschaltbar via `appsettings.json:Logging:FilePath`), `OutlookJsonContext` (Source-Generation-JSON-Kontext für polymorphe `ActiveItem`-Serialisierung nach PublishTrimmed-Änderung), `OutlookJsonOptionsFactory`, Logger-Konventionen in `Program.cs` + `MailTools.cs` (try/catch um Tool-Bodies mit `OutlookServiceException`-Logging). +590/−39 in 7 Files.
+- **`d8ea89e`** (2026-07-21 23:50) — **fix(publish): PublishTrimmed=false**: `.PublishTrimmed` zwingend false weil .NET unter Trimmed `BuiltInComInterop.IsSupported=false` setzt und damit alle COM-Aktivierungen blockiert (`Marshal.GetTypeFromProgID`, `GetObjectForIUnknown`, `[ComImport]`-CoClass). EXE-Größe: 17,5 MB → **44,94 MB**. DECISIONS-Eintrag 2026-07-21 vorhanden.
+- **`4149bc2`** (2026-07-21 23:50) — **feat(mail): `list_mails_recursive(scope, top, filter)`**: Neues MCP-Tool für Property-Filter (z. B. `isRead eq false`) über Ordner-Hierarchie. Class-43-Filter (nur `olMail`), EntryID-basierte Deduplication, Hard-Cap bei `top`. Tool-Count: 25 → 26.
+- **`6b053ed`** (2026-07-21 23:54) — **fix(com): CallSite dynamic binder**: `Microsoft.CSharp.RuntimeBinder.CallSite` statt `GetType().GetProperty()`-Reflection. Reflection lieferte nur RCW-Wrapper-Properties (nicht die echten IDispatch-Properties), dadurch waren `To`/`CC`/`BCC`-Recipients-Collections leer. Neue Helper-Funktion `GetDynamicProperty` in `OutlookInteropAdapter`.
+
+### Architektur-Implikationen
+
+- **COM-Pattern vereinheitlicht**: Alle Property-Zugriffe laufen jetzt über `GetDynamicProperty` (CallSite-Pfad). `TryGetString`, `TryGetDynamic`, `MapMailItem`, `MapAppointmentItem` profitieren automatisch. Neue Mapping-Code-Pfade müssen nicht extra angepasst werden.
+- **Publish-Größe verdoppelt (17,5 MB → 44,94 MB)**: Distribution-Trade-off (Download-Zeit, CI-Laufzeit, User-Disk-Footprint) wurde größer. Akzeptiert weil COM-Funktionalität unter Trim unmöglich ist.
+- **`list_mails_recursive` und `get_mails` sind orthogonal**: Ersteres findet Mails anhand eines Property-Filters über die Ordner-Hierarchie, letzteres bulk-loaded Mails anhand einer EntryID-Liste (vermeidet N round-trips nach `list_mails`/`search_mails`). Beide ergänzen sich, ersetzen sich nicht.
 
 ## Workboard
 

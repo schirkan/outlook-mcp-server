@@ -59,26 +59,30 @@ public sealed class CalendarTools
         [Description("Max Anzahl (1-250, Default 50). Bei mehr Terminen im Fenster: skip = N * top fuer Seite N (Pagination).")] int top = 50,
         [Description("Skip-Count fuer Pagination (Default 0).")] int skip = 0,
         [Description("Optional: Filter-Ausdruck (z. B. 'isAllDay eq false').")] string? filter = null,
+        [Description(@"Format des Termin-Body (siehe get_mail). Default 'markdown'.")] string? bodyFormat = null,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("list_events calendarId={CalendarId} window={Start}/{End} top={Top} skip={Skip}",
-            calendarId, startDateTime, endDateTime, top, skip);
+        var bf = BodyFormatExtensions.ParseBodyFormat(bodyFormat);
+        _logger.LogInformation("list_events calendarId={CalendarId} window={Start}/{End} top={Top} skip={Skip} bodyFormat={Bf}",
+            calendarId, startDateTime, endDateTime, top, skip, bf);
         var request = new ListEventsArgs(calendarId,
             new DateTimeTimeZone { DateTime = startDateTime, TimeZone = startTimeZone },
             new DateTimeTimeZone { DateTime = endDateTime, TimeZone = endTimeZone },
             top, skip, filter);
         return await _service.ListEventsAsync(request.CalendarId, request.Start, request.End,
-            request.Top, request.Skip, request.Filter, cancellationToken);
+            request.Top, request.Skip, request.Filter, bf, cancellationToken);
     }
 
     [McpServerTool(Name = "get_event")]
     [Description("Liest einen einzelnen Termin inkl. Body, Attendees, Reminder.")]
     public async Task<CalendarEvent> GetEvent(
         [Description("Termin EntryID.")] string id,
+        [Description(@"Format des Termin-Body (siehe get_mail). Default 'markdown'.")] string? bodyFormat = null,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("get_event id={Id}", id);
-        return await _service.GetEventAsync(id, cancellationToken);
+        var bf = BodyFormatExtensions.ParseBodyFormat(bodyFormat);
+        _logger.LogInformation("get_event id={Id} bodyFormat={Bf}", id, bf);
+        return await _service.GetEventAsync(id, bf, cancellationToken);
     }
 
     [McpServerTool(Name = "create_event")]

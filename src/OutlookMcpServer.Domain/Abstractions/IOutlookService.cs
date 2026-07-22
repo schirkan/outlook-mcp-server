@@ -137,10 +137,12 @@ public interface IOutlookService
         int top = 50,
         int skip = 0,
         string? filter = null,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     Task<CalendarEvent> GetEventAsync(
         string id,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     // ===== Calendar: Mutationen =====
@@ -174,17 +176,23 @@ public interface IOutlookService
     /// Liefert das aktuell im aktiven Outlook-Inspector-Fenster offene Item
     /// (MailItem oder AppointmentItem). null wenn kein Inspector offen oder
     /// Item-Typ nicht in v1-Scope (Tasks/Contacts sind v1.1).
+    /// <paramref name="bodyFormat"/> steuert nur den Mail-Body von ActiveMail
+    /// (AppointmentItem hat keinen Body).
     /// </summary>
-    Task<ActiveItem?> GetActiveItemAsync(CancellationToken cancellationToken = default);
+    Task<ActiveItem?> GetActiveItemAsync(
+        BodyFormat bodyFormat = BodyFormat.Markdown,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Liefert die im aktiven Outlook-Explorer-Fenster markierten Items,
     /// optional gefiltert nach scope (mail/calendar/any) und gecappt durch top (1-250).
     /// Selection.Count==0 ist valides Empty-Result (kein Fehler).
     /// Wirft OutlookNotActive wenn ActiveExplorer()==null.
+    /// <paramref name="bodyFormat"/> steuert nur den Mail-Body der enthaltenen ActiveMails.
     /// </summary>
     Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
         SelectionScope scope,
         int top = 50,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 }

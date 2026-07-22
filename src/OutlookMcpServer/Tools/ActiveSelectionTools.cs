@@ -23,11 +23,14 @@ public sealed class ActiveSelectionTools
     }
 
     [McpServerTool(Name = "get_active_item")]
-    [Description("Liefert das aktuell im aktiven Outlook-Inspector-Fenster offene Item (MailItem oder AppointmentItem). null wenn kein Inspector offen oder v1-out-of-scope Typ (Tasks/Contacts).")]
-    public async Task<ActiveItem?> GetActiveItem(CancellationToken cancellationToken = default)
+    [Description("Liefert das aktuell im aktiven Outlook-Inspector-Fenster offene Item (MailItem oder AppointmentItem). null wenn kein Inspector offen oder v1-out-of-scope Typ (Tasks/Contacts). bodyFormat steuert nur den Mail-Body von ActiveMail; AppointmentItem hat keinen Body.")]
+    public async Task<ActiveItem?> GetActiveItem(
+        [Description(@"Format des Mail-Body (siehe get_mail). Default 'markdown'. Wirkt nur auf ActiveMail — ActiveEvent (AppointmentItem) hat keinen Body.")] string? bodyFormat = null,
+        CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("get_active_item");
-        return await _service.GetActiveItemAsync(cancellationToken);
+        var bf = BodyFormatExtensions.ParseBodyFormat(bodyFormat);
+        _logger.LogInformation("get_active_item bodyFormat={Bf}", bf);
+        return await _service.GetActiveItemAsync(bf, cancellationToken);
     }
 
     [McpServerTool(Name = "get_selected_items")]
@@ -35,11 +38,13 @@ public sealed class ActiveSelectionTools
     public async Task<IReadOnlyList<ActiveItem>> GetSelectedItems(
         [Description("Scope-Filter: 'mail' = nur Mails, 'calendar' = nur Termine, 'any' = alle (Default any).")] string scope = "any",
         [Description("Max Anzahl (1-250, Default 50).")] int top = 50,
+        [Description(@"Format des Mail-Body (siehe get_mail). Default 'markdown'. Wirkt nur auf enthaltene ActiveMails.")] string? bodyFormat = null,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("get_selected_items scope={Scope} top={Top}", scope, top);
+        var bf = BodyFormatExtensions.ParseBodyFormat(bodyFormat);
+        _logger.LogInformation("get_selected_items scope={Scope} top={Top} bodyFormat={Bf}", scope, top, bf);
         var parsedScope = ParseSelectionScope(scope);
-        return await _service.GetSelectedItemsAsync(parsedScope, top, cancellationToken);
+        return await _service.GetSelectedItemsAsync(parsedScope, top, bf, cancellationToken);
     }
 
     private static SelectionScope ParseSelectionScope(string? value) => (value ?? "any").Trim().ToLowerInvariant() switch

@@ -228,16 +228,16 @@ public sealed class FakeOutlookService : IOutlookService
         throw new KeyNotFoundException(id);
     }
 
-    public Task<PagedResult<CalendarEvent>> ListEventsAsync(string? calendarId, DateTimeTimeZone start, DateTimeTimeZone end, int top = 50, int skip = 0, string? filter = null, CancellationToken cancellationToken = default)
+    public Task<PagedResult<CalendarEvent>> ListEventsAsync(string? calendarId, DateTimeTimeZone start, DateTimeTimeZone end, int top = 50, int skip = 0, string? filter = null, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(ListEventsAsync)}:cal={calendarId},window={start.DateTime}/{end.DateTime},top={top},skip={skip},filter={filter}");
+        Calls.Add($"{nameof(ListEventsAsync)}:cal={calendarId},window={start.DateTime}/{end.DateTime},top={top},skip={skip},filter={filter},bodyFormat={bodyFormat}");
         var list = _events.Values.Skip(skip).Take(top).ToList();
         return Task.FromResult(new PagedResult<CalendarEvent> { Value = list });
     }
 
-    public Task<CalendarEvent> GetEventAsync(string id, CancellationToken cancellationToken = default)
+    public Task<CalendarEvent> GetEventAsync(string id, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(GetEventAsync)}:id={id}");
+        Calls.Add($"{nameof(GetEventAsync)}:id={id},bodyFormat={bodyFormat}");
         if (_events.TryGetValue(id, out var e)) return Task.FromResult(e);
         throw new KeyNotFoundException(id);
     }
@@ -274,8 +274,8 @@ public sealed class FakeOutlookService : IOutlookService
 
     // ===== Active-Inspector / Selection (Fakes fuer Tests) =====
 
-    public Func<CancellationToken, ActiveItem?>? OnGetActiveItem { get; set; }
-    public Func<SelectionScope, int, CancellationToken, IReadOnlyList<ActiveItem>>? OnGetSelectedItems { get; set; }
+    public Func<BodyFormat, CancellationToken, ActiveItem?>? OnGetActiveItem { get; set; }
+    public Func<SelectionScope, int, BodyFormat, CancellationToken, IReadOnlyList<ActiveItem>>? OnGetSelectedItems { get; set; }
     private readonly List<ActiveItem> _seededSelectedItems = new();
     private ActiveItem? _seededActiveItem;
 
@@ -287,20 +287,23 @@ public sealed class FakeOutlookService : IOutlookService
     }
     public void ClearSelectedItems() => _seededSelectedItems.Clear();
 
-    public Task<ActiveItem?> GetActiveItemAsync(CancellationToken cancellationToken = default)
+    public Task<ActiveItem?> GetActiveItemAsync(
+        BodyFormat bodyFormat = BodyFormat.Markdown,
+        CancellationToken cancellationToken = default)
     {
-        Calls.Add(nameof(GetActiveItemAsync));
+        Calls.Add($"{nameof(GetActiveItemAsync)}:bodyFormat={bodyFormat}");
         ThrowIfInjected();
-        if (OnGetActiveItem is not null) return Task.FromResult(OnGetActiveItem(cancellationToken));
+        if (OnGetActiveItem is not null) return Task.FromResult(OnGetActiveItem(bodyFormat, cancellationToken));
         return Task.FromResult<ActiveItem?>(_seededActiveItem);
     }
 
     public Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
         SelectionScope scope,
         int top = 50,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(GetSelectedItemsAsync)}:scope={scope},top={top}");
+        Calls.Add($"{nameof(GetSelectedItemsAsync)}:scope={scope},top={top},bodyFormat={bodyFormat}");
         ThrowIfInjected();
 
         // Validation (mimics OutlookService-Validation in [1,250])
@@ -308,7 +311,7 @@ public sealed class FakeOutlookService : IOutlookService
 
         // Quelle: Callback (Override) oder seeded items
         IReadOnlyList<ActiveItem> source = OnGetSelectedItems is not null
-            ? OnGetSelectedItems(scope, top, cancellationToken)
+            ? OnGetSelectedItems(scope, top, bodyFormat, cancellationToken)
             : _seededSelectedItems.ToList();
 
         // Scope-Filter (mimics OutlookInteropAdapter Class-Dispatch + Filter)

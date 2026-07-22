@@ -125,10 +125,12 @@ public interface IInteropOutlookAdapter
         int top = 50,
         int skip = 0,
         string? filter = null,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     Task<CalendarEvent> GetEventAsync(
         string id,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     Task<string> CreateEventAsync(
@@ -158,7 +160,9 @@ public interface IInteropOutlookAdapter
     /// COM-Mapping fuer <see cref="IOutlookService.GetActiveItemAsync"/>:
     /// <c>Application.ActiveInspector()?.CurrentItem</c> + Type-Dispatch.
     /// </summary>
-    Task<ActiveItem?> GetActiveItemAsync(CancellationToken cancellationToken = default);
+    Task<ActiveItem?> GetActiveItemAsync(
+        BodyFormat bodyFormat,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// COM-Mapping fuer <see cref="IOutlookService.GetSelectedItemsAsync"/>:
@@ -168,6 +172,7 @@ public interface IInteropOutlookAdapter
     /// </summary>
     Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
         SelectionScope scope,
-        int top = 50,
+        int top,
+        BodyFormat bodyFormat,
         CancellationToken cancellationToken = default);
 }

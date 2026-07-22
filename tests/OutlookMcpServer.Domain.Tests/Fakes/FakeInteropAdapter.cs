@@ -122,10 +122,10 @@ public sealed class FakeInteropAdapter : IInteropOutlookAdapter
     public Task<Calendar> GetCalendarAsync(string id, CancellationToken cancellationToken = default)
         => throw new NotSupportedException();
 
-    public Task<PagedResult<CalendarEvent>> ListEventsAsync(string? calendarId, DateTimeTimeZone start, DateTimeTimeZone end, int top = 50, int skip = 0, string? filter = null, CancellationToken cancellationToken = default)
+    public Task<PagedResult<CalendarEvent>> ListEventsAsync(string? calendarId, DateTimeTimeZone start, DateTimeTimeZone end, int top = 50, int skip = 0, string? filter = null, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
         => Task.FromResult(new PagedResult<CalendarEvent> { Value = Array.Empty<CalendarEvent>() });
 
-    public Task<CalendarEvent> GetEventAsync(string id, CancellationToken cancellationToken = default)
+    public Task<CalendarEvent> GetEventAsync(string id, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
         => throw new NotSupportedException();
 
     public Task<string> CreateEventAsync(CreateEventRequest request, CancellationToken cancellationToken = default)
@@ -151,23 +151,26 @@ public sealed class FakeInteropAdapter : IInteropOutlookAdapter
 
     // ===== Active-Inspector / Selection =====
 
-    public Func<CancellationToken, ActiveItem?>? OnGetActiveItem { get; set; }
-    public Func<SelectionScope, int, CancellationToken, IReadOnlyList<ActiveItem>>? OnGetSelectedItems { get; set; }
+    public Func<BodyFormat, CancellationToken, ActiveItem?>? OnGetActiveItem { get; set; }
+    public Func<SelectionScope, int, BodyFormat, CancellationToken, IReadOnlyList<ActiveItem>>? OnGetSelectedItems { get; set; }
 
-    public Task<ActiveItem?> GetActiveItemAsync(CancellationToken cancellationToken = default)
+    public Task<ActiveItem?> GetActiveItemAsync(
+        BodyFormat bodyFormat,
+        CancellationToken cancellationToken = default)
     {
-        Calls.Add(nameof(GetActiveItemAsync));
-        if (OnGetActiveItem is not null) return Task.FromResult(OnGetActiveItem(cancellationToken));
+        Calls.Add($"{nameof(GetActiveItemAsync)}:bodyFormat={bodyFormat}");
+        if (OnGetActiveItem is not null) return Task.FromResult(OnGetActiveItem(bodyFormat, cancellationToken));
         return Task.FromResult<ActiveItem?>(null);
     }
 
     public Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
         SelectionScope scope,
-        int top = 50,
+        int top,
+        BodyFormat bodyFormat,
         CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(GetSelectedItemsAsync)}:scope={scope},top={top}");
-        if (OnGetSelectedItems is not null) return Task.FromResult(OnGetSelectedItems(scope, top, cancellationToken));
+        Calls.Add($"{nameof(GetSelectedItemsAsync)}:scope={scope},top={top},bodyFormat={bodyFormat}");
+        if (OnGetSelectedItems is not null) return Task.FromResult(OnGetSelectedItems(scope, top, bodyFormat, cancellationToken));
         return Task.FromResult<IReadOnlyList<ActiveItem>>(Array.Empty<ActiveItem>());
     }
 }

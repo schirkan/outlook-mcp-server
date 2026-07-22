@@ -46,7 +46,7 @@ public sealed class ActiveSelectionToolsTests
         var result = await tools.GetActiveItem();
 
         Assert.Null(result);
-        Assert.Contains(nameof(FakeOutlookService.GetActiveItemAsync), fake.Calls);
+        Assert.Contains($"{nameof(FakeOutlookService.GetActiveItemAsync)}:bodyFormat=Markdown", fake.Calls);
     }
 
     [Fact]
@@ -55,7 +55,7 @@ public sealed class ActiveSelectionToolsTests
         var mail = SampleMail("M-1");
         var fake = new FakeOutlookService
         {
-            OnGetActiveItem = _ => new ActiveMail { Item = mail },
+            OnGetActiveItem = (_, _) => new ActiveMail { Item = mail },
         };
         var tools = CreateTools(fake);
 
@@ -73,7 +73,7 @@ public sealed class ActiveSelectionToolsTests
         var evt = SampleEvent("E-1");
         var fake = new FakeOutlookService
         {
-            OnGetActiveItem = _ => new ActiveEvent { Item = evt },
+            OnGetActiveItem = (_, _) => new ActiveEvent { Item = evt },
         };
         var tools = CreateTools(fake);
 
@@ -107,7 +107,7 @@ public sealed class ActiveSelectionToolsTests
     {
         var fake = new FakeOutlookService
         {
-            OnGetSelectedItems = (_, _, _) => new ActiveItem[]
+            OnGetSelectedItems = (_, _, _, _) => new ActiveItem[]
             {
                 new ActiveMail { Item = SampleMail("M-1") },
                 new ActiveEvent { Item = SampleEvent("E-1") },
@@ -128,7 +128,7 @@ public sealed class ActiveSelectionToolsTests
     {
         var fake = new FakeOutlookService
         {
-            OnGetSelectedItems = (_, _, _) => new ActiveItem[]
+            OnGetSelectedItems = (_, _, _, _) => new ActiveItem[]
             {
                 new ActiveMail { Item = SampleMail("M-1") },
                 new ActiveEvent { Item = SampleEvent("E-1") },
@@ -148,7 +148,7 @@ public sealed class ActiveSelectionToolsTests
     {
         var fake = new FakeOutlookService
         {
-            OnGetSelectedItems = (_, _, _) => new ActiveItem[]
+            OnGetSelectedItems = (_, _, _, _) => new ActiveItem[]
             {
                 new ActiveMail { Item = SampleMail("M-1") },
                 new ActiveEvent { Item = SampleEvent("E-1") },
@@ -168,7 +168,7 @@ public sealed class ActiveSelectionToolsTests
     {
         var fake = new FakeOutlookService
         {
-            OnGetSelectedItems = (_, _, _) => new ActiveItem[]
+            OnGetSelectedItems = (_, _, _, _) => new ActiveItem[]
             {
                 new ActiveMail { Item = SampleMail("M-1") },
                 new ActiveEvent { Item = SampleEvent("E-1") },
@@ -191,7 +191,7 @@ public sealed class ActiveSelectionToolsTests
     {
         var fake = new FakeOutlookService
         {
-            OnGetSelectedItems = (_, _, _) => new ActiveItem[]
+            OnGetSelectedItems = (_, _, _, _) => new ActiveItem[]
             {
                 new ActiveMail { Item = SampleMail("M-1") },
                 new ActiveMail { Item = SampleMail("M-2") },
@@ -244,7 +244,7 @@ public sealed class ActiveSelectionToolsTests
         // die Exception unveraendert durchreichen (kein Swallowing).
         var fake = new FakeOutlookService
         {
-            OnGetSelectedItems = (_, _, _) => throw new OutlookServiceException(
+            OnGetSelectedItems = (_, _, _, _) => throw new OutlookServiceException(
                 ErrorCode.OutlookNotActive,
                 "Outlook ActiveExplorer ist null"),
         };

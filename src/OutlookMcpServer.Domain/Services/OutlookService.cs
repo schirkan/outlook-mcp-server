@@ -261,6 +261,7 @@ public sealed class OutlookService : IOutlookService
         int top = 50,
         int skip = 0,
         string? filter = null,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
         ValidationHelpers.ValidateDateTimeTimeZone(start, nameof(start));
@@ -268,15 +269,16 @@ public sealed class OutlookService : IOutlookService
         ValidationHelpers.ValidateRange(top, 1, 250, nameof(top));
         ValidationHelpers.ValidateRange(skip, 0, int.MaxValue, nameof(skip));
         if (calendarId is not null) ValidationHelpers.ValidateStringNotEmpty(calendarId, nameof(calendarId));
-        return _adapter.ListEventsAsync(calendarId, start, end, top, skip, filter, cancellationToken);
+        return _adapter.ListEventsAsync(calendarId, start, end, top, skip, filter, bodyFormat, cancellationToken);
     }
 
     public Task<CalendarEvent> GetEventAsync(
         string id,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
         ValidationHelpers.ValidateStringNotEmpty(id, nameof(id));
-        return _adapter.GetEventAsync(id, cancellationToken);
+        return _adapter.GetEventAsync(id, bodyFormat, cancellationToken);
     }
 
     // ===== Calendar: Mutationen =====
@@ -342,19 +344,22 @@ public sealed class OutlookService : IOutlookService
 
     // ===== Active-Inspector / Selection (COM-only) =====
 
-    public Task<ActiveItem?> GetActiveItemAsync(CancellationToken cancellationToken = default)
+    public Task<ActiveItem?> GetActiveItemAsync(
+        BodyFormat bodyFormat = BodyFormat.Markdown,
+        CancellationToken cancellationToken = default)
     {
         // Passthrough: null ist valides Resultat (kein Inspector oder v1-out-of-scope Typ)
-        return _adapter.GetActiveItemAsync(cancellationToken);
+        return _adapter.GetActiveItemAsync(bodyFormat, cancellationToken);
     }
 
     public async Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
         SelectionScope scope,
         int top = 50,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
         ValidationHelpers.ValidateRange(top, 1, 250, nameof(top));
-        return await _adapter.GetSelectedItemsAsync(scope, top, cancellationToken);
+        return await _adapter.GetSelectedItemsAsync(scope, top, bodyFormat, cancellationToken);
     }
 
     // ===== Private Helpers =====

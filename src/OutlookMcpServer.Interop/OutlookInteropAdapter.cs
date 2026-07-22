@@ -274,6 +274,15 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     private record MailDates(DateTimeOffset? Sent, DateTimeOffset? Received);
     private record MailMetadata(bool HasAttachments, bool IsUnread, Importance Importance, List<string> Categories);
 
+    // Outlook-OOM OlRecipientType:
+    //   1 = olOriginator (der From-Absender)
+    //   2 = olTo
+    //   3 = olCC
+    //   4 = olBCC
+    private const int OlRecipientTo = 2;
+    private const int OlRecipientCC = 3;
+    private const int OlRecipientBCC = 4;
+
     private static MailMessage MapMailItem(dynamic mail, bool includeBody, BodyFormat bodyFormat, ILogger? logger = null)
     {
         var entryId = (string)mail.EntryID;
@@ -424,10 +433,61 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
 
     private static MailRecipients TryMapMailRecipients(dynamic mail)
     {
-        return new MailRecipients(
-            MapRecipients(TryGetDynamic(mail, "To")),
-            MapRecipients(TryGetDynamic(mail, "CC")),
-            MapRecipients(TryGetDynamic(mail, "BCC")));
+        // Outlook-OOM MailItem hat KEINE separaten To/CC/BCC-Properties — nur eine
+        // einheitliche Recipients-Collection, in der jedes Recipient-Element eine
+        // Type-Property (2=To, 3=CC, 4=BCC) hat. Der vorherige Versuch, To/CC/BCC
+        // per TryGetDynamic zu lesen, hat daher leere Arrays geliefert.
+        // Strategie: Recipients einmal holen, dann nach Type filtern.
+        dynamic? recipients = TryGetDynamic(mail, "Recipients");
+        if (recipients is null)
+        {
+            return new MailRecipients(
+                Array.Empty<Recipient>(),
+                Array.Empty<Recipient>(),
+                Array.Empty<Recipient>());
+        }
+        var to = new List<Recipient>();
+        var cc = new List<Recipient>();
+        var bcc = new List<Recipient>();
+        try
+        {
+            foreach (var rec in recipients)
+            {
+                try
+                {
+                    if (rec is null) continue;
+                    int type = 0;
+                    try { type = (int)rec.Type; } catch { }
+                    // Bei Type=1 (olOriginator) handelt es sich um den From-Absender —
+                    // nicht in die Empfänger-Listen aufnehmen, der wird separat
+                    // in MapMailFrom() gelesen.
+                    var name = TryGetString(rec, "Name");
+                    var address = TryGetString(rec, "Address");
+                    if (string.IsNullOrEmpty(address)) continue;
+                    var recipient = new Recipient
+                    {
+                        EmailAddress = new EmailAddress { Name = name, Address = address },
+                    };
+                    switch (type)
+                    {
+                        case OlRecipientTo: to.Add(recipient); break;
+                        case OlRecipientCC: cc.Add(recipient); break;
+                        case OlRecipientBCC: bcc.Add(recipient); break;
+                        // Unbekannte Typen (oder Originator) werden ignoriert.
+                    }
+                }
+                finally
+                {
+                    if (rec is not null) Marshal.ReleaseComObject(rec);
+                }
+            }
+        }
+        catch { }
+        finally
+        {
+            try { Marshal.ReleaseComObject(recipients); } catch { }
+        }
+        return new MailRecipients(to, cc, bcc);
     }
 
     private static MailDates TryMapMailDates(dynamic mail)
@@ -2186,6 +2246,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         int top = 50,
         int skip = 0,
         string? filter = null,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
         await GetOutlookApplicationAsync(cancellationToken);
@@ -2224,7 +2285,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                         dynamic item = items.Item(i + 1);
                         try
                         {
-                            slice.Add(MapAppointmentItem(item));
+                            slice.Add(MapAppointmentItem(item, bodyFormat));
                         }
                         finally
                         {
@@ -2251,6 +2312,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
 
     public async Task<CalendarEvent> GetEventAsync(
         string id,
+        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
         await GetOutlookApplicationAsync(cancellationToken);
@@ -2259,7 +2321,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             dynamic item = GetMapiNamespace().GetItemFromID(id, Type.Missing);
             try
             {
-                return MapAppointmentItem(item);
+                return MapAppointmentItem(item, bodyFormat);
             }
             finally
             {
@@ -2333,11 +2395,11 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     private record AppointmentReminder(bool IsOn, int MinutesBeforeStart);
     private record AppointmentMetadata(bool HasAttachments, string? ICalUId, DateTimeOffset? Created, DateTimeOffset? Modified, string? ChangeKey, EventType Type);
 
-    private static CalendarEvent MapAppointmentItem(dynamic item)
+    private static CalendarEvent MapAppointmentItem(dynamic item, BodyFormat bodyFormat = BodyFormat.Markdown)
     {
         var entryId = (string)item.EntryID;
 
-        var body = TryMapAppointmentBody(item);
+        var body = TryMapAppointmentBody(item, bodyFormat);
         var startEnd = TryMapAppointmentStartEnd(item);
         var loc = TryMapAppointmentLocation(item);
         var organizer = TryMapAppointmentOrganizer(item);
@@ -2381,22 +2443,28 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     /// Liest den Body (Text oder HTML) aus einem Outlook-Appointment-Item.
     /// BodyFormat MUSS vor Body/HTMLBody gelesen werden.
     /// </summary>
-    private static ItemBody? TryMapAppointmentBody(dynamic item)
+    private static ItemBody? TryMapAppointmentBody(dynamic item, BodyFormat bodyFormat = BodyFormat.Markdown)
     {
         try
         {
             string bodyText = TryGetString(item, "Body") ?? string.Empty;
             string bodyHtml = TryGetString(item, "HTMLBody") ?? string.Empty;
-            int fmt = 1;
-            try { fmt = (int)item.BodyFormat; } catch { }
-            if (fmt == 2 && !string.IsNullOrEmpty(bodyHtml))
+            // Native Quelle priorisieren: HTML wenn vorhanden, sonst Text.
+            string? nativeSource = null;
+            if (!string.IsNullOrEmpty(bodyHtml))
             {
-                return new ItemBody { ContentType = ItemBodyType.Html, Content = bodyHtml };
+                nativeSource = bodyHtml;
             }
-            if (!string.IsNullOrEmpty(bodyText))
+            else if (!string.IsNullOrEmpty(bodyText))
             {
-                return new ItemBody { ContentType = ItemBodyType.Text, Content = bodyText };
+                nativeSource = bodyText;
             }
+            if (nativeSource is null || nativeSource.Length == 0) return null;
+            string htmlForConversion = nativeSource == bodyText
+                ? $"<html><body><pre>{System.Net.WebUtility.HtmlEncode(bodyText)}</pre></body></html>"
+                : nativeSource;
+            var (ct, content) = HtmlBodyConverter.Convert(htmlForConversion, bodyFormat);
+            return new ItemBody { ContentType = ct, Content = content };
         }
         catch { }
         return null;
@@ -3012,7 +3080,9 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
 
     // ===== Active-Inspector / Selection (Phase 3h) =====
 
-    public async Task<ActiveItem?> GetActiveItemAsync(CancellationToken cancellationToken = default)
+    public async Task<ActiveItem?> GetActiveItemAsync(
+        BodyFormat bodyFormat,
+        CancellationToken cancellationToken = default)
     {
         await GetOutlookApplicationAsync(cancellationToken);
         return await RunComAsync(() =>
@@ -3030,7 +3100,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                 currentItem = TryGetInspectorCurrentItem(inspector);
                 if (currentItem is null) return (ActiveItem?)null;
 
-                return MapActiveItemFromCurrentItem(currentItem);
+                return MapActiveItemFromCurrentItem(currentItem, bodyFormat, _logger);
             }
             finally
             {
@@ -3065,13 +3135,13 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     /// OlObjectClass: 43=olMail, 26=olAppointment, 48=olTask, 40=olContact, ...
     /// Tasks/Contacts/etc. -> v1.1: null.
     /// </summary>
-    private static ActiveItem? MapActiveItemFromCurrentItem(dynamic currentItem, ILogger? logger = null)
+    private static ActiveItem? MapActiveItemFromCurrentItem(dynamic currentItem, BodyFormat bodyFormat, ILogger? logger = null)
     {
         int objectClass = 0;
         try { objectClass = (int)currentItem.Class; } catch { }
         return objectClass switch
         {
-            43 /* olMail */ => new ActiveMail { Item = MapMailItem(currentItem, true, BodyFormat.Markdown, logger) },
+            43 /* olMail */ => new ActiveMail { Item = MapMailItem(currentItem, true, bodyFormat, logger) },
             26 /* olAppointment */ => new ActiveEvent { Item = MapAppointmentItem(currentItem) },
             _ => null,
         };
@@ -3079,7 +3149,8 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
 
     public async Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
         SelectionScope scope,
-        int top = 50,
+        int top,
+        BodyFormat bodyFormat,
         CancellationToken cancellationToken = default)
     {
         await GetOutlookApplicationAsync(cancellationToken);
@@ -3135,7 +3206,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
 
                             ActiveItem? mapped = objectClass switch
                             {
-                                43 => new ActiveMail { Item = MapMailItem(item, true, BodyFormat.Markdown, _logger) },
+                                43 => new ActiveMail { Item = MapMailItem(item, true, bodyFormat, _logger) },
                                 26 => new ActiveEvent { Item = MapAppointmentItem(item) },
                                 _ => null,
                             };

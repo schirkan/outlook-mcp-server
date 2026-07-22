@@ -34,6 +34,7 @@ namespace OutlookMcpServer.Domain.Serialization;
 [JsonSerializable(typeof(InlineAttachment))]
 [JsonSerializable(typeof(SendMailRequest))]
 [JsonSerializable(typeof(SendMailResult))]
+[JsonSerializable(typeof(BulkMailResult))]
 [JsonSerializable(typeof(MailUpdate))]
 // Calendar
 [JsonSerializable(typeof(Calendar))]
@@ -71,6 +72,10 @@ namespace OutlookMcpServer.Domain.Serialization;
 [JsonSerializable(typeof(IReadOnlyList<string>))]
 [JsonSerializable(typeof(IReadOnlyList<DateTimeTimeZone>))]
 [JsonSerializable(typeof(IReadOnlyList<MeetingTimeCandidate>))]
+// Konkrete Array-Typen fuer Tool-Parameter (MCP-SDK serialisiert nach
+// deklariertem Parametertyp — string[] != IReadOnlyList<string> fuer
+// die Source-Gen-Metadata). Beispiel: get_mails_by_ids(string[] ids).
+[JsonSerializable(typeof(string[]))]
 // ActiveItem ist polymorph — Basis + Sub-Typen explizit registrieren
 [JsonSerializable(typeof(ActiveItem))]
 [JsonSerializable(typeof(ActiveMail))]

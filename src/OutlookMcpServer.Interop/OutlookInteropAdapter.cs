@@ -1108,26 +1108,38 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                         var ol = OlEnumMappings.ToOlDefaultFolder(name);
                         if (ol is null)
                         {
+                            _logger.LogWarning(
+                                "ListMailsRecursive scope-Eintrag unbekannt: {Name} (kein WellKnownFolder)",
+                                name);
                             skippedFolders++;
                             continue;
                         }
+                        _logger.LogInformation(
+                            "ListMailsRecursive rufe GetDefaultFolder(name={Name}, olId={OlId})",
+                            name, ol.Value);
                         try
                         {
                             folder = root.GetDefaultFolder(ol.Value);
                         }
                         catch (Exception olEx)
                         {
-                            skippedFolders++;
                             _logger.LogWarning(olEx,
                                 "ListMailsRecursive GetDefaultFolder({Name}) fehlgeschlagen; uebersprungen",
                                 name);
+                            skippedFolders++;
                             continue;
                         }
                         if (folder is null)
                         {
+                            _logger.LogWarning(
+                                "ListMailsRecursive GetDefaultFolder({Name}) lieferte null; uebersprungen",
+                                name);
                             skippedFolders++;
                             continue;
                         }
+                        _logger.LogInformation(
+                            "ListMailsRecursive GetDefaultFolder({Name}) -> Folder.Name={FolderName}",
+                            name, (string)(TryGetString(folder, "Name") ?? "?"));
                         try
                         {
                             CollectMailsFromFolderRecursive(
@@ -1142,6 +1154,9 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                                 ref failedItems,
                                 ref restrictedItems,
                                 ref fallbackFolders);
+                            _logger.LogInformation(
+                                "ListMailsRecursive Top-Level {Name} fertig: collected={Collected}/{Top} visitedFolders={Visited}",
+                                name, collected.Count, top, visitedFolders);
                             if (collected.Count >= top) break;
                         }
                         catch (COMException ex)
@@ -1299,6 +1314,11 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                 subFolders = null;
             }
             if (subFolders is null) return;
+            int subCount;
+            try { subCount = (int)subFolders.Count; } catch { subCount = -1; }
+            _logger.LogInformation(
+                "ListMailsRecursive Subfolder-Walk: parent={Parent} subCount={SubCount}",
+                (string)(TryGetString(parent, "Name") ?? "?"), subCount);
             foreach (var sub in subFolders)
             {
                 try

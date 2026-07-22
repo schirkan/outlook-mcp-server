@@ -1,4 +1,4 @@
-# Outlook MCP Server
+﻿# Outlook MCP Server
 
 MCP-Server (Model Context Protocol) fuer den Zugriff auf eine lokale **klassische** Outlook-Installation (Microsoft Outlook fuer Windows, klassischer Desktop-Client - kein Microsoft 365 Cloud, kein Graph API, kein "New Outlook").
 

@@ -158,27 +158,30 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
 
     /// <summary>
     /// Loest einen Well-Known-Folder per OlDefaultFolder-ID auf. In
-    /// Multi-Store-Profilen (z. B. Cached-Mode/Exchange + zusaetzliches PST)
-    /// liefert <c>ns.GetDefaultFolder(olId)</c> nicht zwingend den erwarteten
-    /// Folder — Outlook nummeriert die olIds je nach Store-Reihenfolge anders.
+    /// Multi-Store-Profilen (z. B. Exchange + PST/Notes) liefert Outlook fuer
+    /// dieselbe olId je nach Store einen anderen Folder. Daher gilt:
     ///
-    /// Strategie (robust, sprach- und profilunabhaengig):
-    ///  1. Iteriere ueber <c>session.Stores</c> und versuche pro Store
-    ///     <c>store.GetDefaultFolder(olId)</c>. Der erste Store, der die ID
-    ///     unterstuetzt, gewinnt.
-    ///  2. Wenn kein Store den Well-Known-Folder enthaelt: Fallback auf
-    ///     <c>ns.GetDefaultFolder(olId)</c> (Originalverhalten).
+    /// 1. Zuerst `ns.GetDefaultFolder(olId)` probieren.
+    /// 2. Danach ueber `session.Stores` iterieren.
     ///
-    /// Liefert <c>null</c>, wenn nirgends etwas gefunden wurde.
+    /// Der erste Treffer wird zurueckgegeben, ohne Schema-Pruefung.
     /// </summary>
     private dynamic? ResolveDefaultFolderSmart(int olFolderId)
     {
-        // 1) session.Stores durchlaufen — Multi-Store-robust
         try
         {
             dynamic ns = GetMapiNamespace();
-            dynamic session = ns.Session;
-            dynamic stores = session.Stores;
+            return ns.GetDefaultFolder(olFolderId);
+        }
+        catch (COMException)
+        {
+            // Fallback auf Stores unten.
+        }
+
+        try
+        {
+            dynamic ns = GetMapiNamespace();
+            dynamic stores = ns.Session.Stores;
             try
             {
                 foreach (var store in stores)
@@ -186,14 +189,11 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                     try
                     {
                         dynamic folder = store.GetDefaultFolder(olFolderId);
-                        if (folder is not null)
-                        {
-                            return folder;
-                        }
+                        if (folder is not null) return folder;
                     }
                     catch (COMException)
                     {
-                        // Dieser Store kennt die olId nicht — naechster.
+                        // Store kennt die olId nicht.
                     }
                 }
             }
@@ -204,19 +204,110 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         }
         catch
         {
-            // session/Stores nicht verfuegbar — gleich zu Schritt 2.
+            // kein weiterer Fallback
         }
 
-        // 2) Fallback: ns.GetDefaultFolder (Originalverhalten)
+        return null;
+    }
+
+    /// <summary>
+    /// Wie <see cref="ResolveDefaultFolderSmart"/>, aber mit Mail-Schema-Pruefung.
+    /// Notes-/Journal-/Calendar-Folder werden ignoriert. Falls mehrere Stores
+    /// denselben olId-Wert liefern, wird der erste Folder mit Mail-Schema aus
+    /// dem Default-Pfad bevorzugt.
+    /// </summary>
+    private dynamic? ResolveDefaultFolderByOlIdWithSchemaCheck(int olFolderId)
+    {
+        var candidates = new List<dynamic>();
+
         try
         {
             dynamic ns = GetMapiNamespace();
-            return ns.GetDefaultFolder(olFolderId);
+            dynamic folder = ns.GetDefaultFolder(olFolderId);
+            if (folder is not null) candidates.Add(folder);
         }
-        catch (COMException)
+        catch (COMException) { }
+
+        try
         {
-            return null;
+            dynamic ns = GetMapiNamespace();
+            dynamic stores = ns.Session.Stores;
+            try
+            {
+                foreach (var store in stores)
+                {
+                    try
+                    {
+                        dynamic folder = store.GetDefaultFolder(olFolderId);
+                        if (folder is not null) candidates.Add(folder);
+                    }
+                    catch (COMException) { }
+                }
+            }
+            finally
+            {
+                try { Marshal.ReleaseComObject(stores); } catch { }
+            }
         }
+        catch { }
+
+        foreach (var folder in candidates)
+        {
+            if (IsMailFolder(folder)) return folder;
+            try { Marshal.ReleaseComObject(folder); } catch { }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Heuristik fuer Mail-Folder. Outlook.DefaultItemType verwendet fuer
+    /// Folder-Inhalte u. a. folgende Werte:
+    ///   0 = olMailItem
+    ///   1 = olAppointmentItem
+    ///   2 = olContactItem
+    ///   3 = olTaskItem
+    ///   4 = olJournalItem
+    ///   5 = olNoteItem
+    ///   6 = olPostItem
+    ///
+    /// Fuer Mail-Folder akzeptieren wir NUR olMailItem=0.
+    /// </summary>
+    private static bool IsMailFolder(dynamic folder)
+    {
+        if (folder is null) return false;
+        try
+        {
+            int defaultItemType = (int)folder.DefaultItemType;
+            return defaultItemType == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Kleine serverseitige DASL-Normalisierung fuer die haeufigsten
+    /// Outlook-Property-Namen, die in der Praxis oft mit falscher
+    /// Gross-/Kleinschreibung geschrieben werden und sonst in Restrict()
+    /// mit 0x80020009 enden wuerden.
+    ///
+    /// Aktuell korrigieren wir nur:
+    ///   [UnRead] -> [Unread]
+    ///
+    /// Hinweis: [ReceivedTime] bleibt unveraendert; wenn Outlook auf einem
+    /// Nicht-Mail-Folder arbeitet, ist das ein Schemafehler des Folders,
+    /// nicht des Filters.
+    /// </summary>
+    private static string? NormalizeDaslFilter(string? filter)
+    {
+        if (string.IsNullOrWhiteSpace(filter)) return filter;
+        return System.Text.RegularExpressions.Regex.Replace(
+            filter,
+            @"\[UnRead\]",
+            "[Unread]",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     }
 
     /// <summary>
@@ -783,40 +874,47 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         _logger.LogInformation(
             "ListMails START folderId={FolderId} top={Top} skip={Skip} filter={Filter} search={Search}",
             folderId, top, skip, filter, search);
+
         return await RunComAsync(() =>
         {
+            string? normalizedFilter = filter;
+            if (WellKnownFolder.IsKnownMailFolder(folderId))
+            {
+                // Die Tool-Schicht normalisiert nur list_mails_recursive. Direktaufrufe
+                // auf list_mails sollen denselben Alias-Support erhalten.
+                normalizedFilter = NormalizeDaslFilter(filter);
+            }
+
             dynamic folder = GetFolderByIdOrWellKnownName(folderId)
                 ?? throw new OutlookServiceException(
                     ErrorCode.FolderNotFound,
                     $"Mail-Ordner nicht gefunden: '{folderId}'.");
+
             string? folderName = null;
-            try { folderName = (string)folder.Name; } catch { /* defensive */ }
+            try { folderName = (string)folder.Name; } catch { }
             _logger.LogInformation(
                 "ListMails folder resolved: displayName={FolderName} folderId={FolderId}",
                 folderName, folderId);
+
+            dynamic? items = null;
             try
             {
-                string combinedFilter = CombineDaslFilters(filter, search);
-                dynamic items = folder.Items;
+                string combinedFilter = CombineDaslFilters(normalizedFilter, search);
+                items = folder.Items;
+
                 int rawCount = 0;
                 try { rawCount = (int)items.Count; } catch { }
                 _logger.LogInformation(
                     "ListMails raw item count before Restrict: {RawCount} (folder={FolderName})",
                     rawCount, folderName);
 
-                // Wir versuchen zunaechst einen Restrict mit dem kombinierten
-                // Filter. Wenn dieser fehlschlaegt (z. B. wegen unsupported
-                // DASL-Property auf einem Exchange-Item oder wegen eines
-                // Sonderzeichens im Such-Query), fallen wir auf eine
-                // unguelfilterte Iteration mit nachtraeglicher In-Memory-Pruefung
-                // zurueck. So bekommen wir zumindest ein Ergebnis, statt eines
-                // generischen Fehlers.
                 try
                 {
                     if (!string.IsNullOrWhiteSpace(combinedFilter))
                     {
                         items = items.Restrict(combinedFilter);
-                        int restrictedCount = (int)items.Count;
+                        int restrictedCount = 0;
+                        try { restrictedCount = (int)items.Count; } catch { }
                         _logger.LogInformation(
                             "ListMails Restrict OK: {Count} items nach Filter (folder={FolderName})",
                             restrictedCount, folderName);
@@ -827,92 +925,102 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                     _logger.LogWarning(restrictEx,
                         "ListMails Restrict fehlgeschlagen (HResult=0x{HResult:X8}); " +
                         "Fallback auf ungefilterte Iteration. filter={Filter} search={Search}",
-                        restrictEx.HResult, filter, search);
-                    // Items erneut holen, da Restrict-Fehler den Items-Zustand
-                    // undefiniert hinterlassen kann.
+                        restrictEx.HResult, normalizedFilter, search);
                     try { Marshal.ReleaseComObject(items); } catch { }
                     items = folder.Items;
                 }
+
                 try
                 {
-                    items.Sort("[ReceivedTime]", true); // newest first
+                    items.Sort("[ReceivedTime]", true);
+                }
+                catch (COMException sortEx)
+                {
+                    _logger.LogWarning(sortEx,
+                        "ListMails Sort nach [ReceivedTime] fehlgeschlagen (HResult=0x{HResult:X8}); " +
+                        "Fallback: unsortierte Iteration. folder={FolderName}",
+                        sortEx.HResult, folderName);
+                }
 
-                    int total = (int)items.Count;
-                    int start = Math.Min(skip, total);
-                    int end = Math.Min(skip + top, total);
-                    var slice = new List<MailMessage>(end - start);
-                    int skippedNonMail = 0;
-                    int failedItems = 0;
-                    for (int i = start; i < end; i++)
+                int total = 0;
+                try { total = (int)items.Count; } catch { }
+
+                int start = Math.Min(skip, total);
+                int end = Math.Min(skip + top, total);
+                var slice = new List<MailMessage>(end - start);
+                int skippedNonMail = 0;
+                int failedItems = 0;
+
+                for (int i = start; i < end; i++)
+                {
+                    dynamic? item = null;
+                    try
                     {
-                        dynamic item;
-                        try
+                        item = items.Item(i + 1);
+                    }
+                    catch (COMException itemEx)
+                    {
+                        failedItems++;
+                        _logger.LogWarning(itemEx,
+                            "ListMails ueberspringe Item-Index {Index} (HResult=0x{HResult:X8}); " +
+                            "Item nicht lesbar im Folder {FolderName}",
+                            i + 1, itemEx.HResult, folderName);
+                        continue;
+                    }
+
+                    try
+                    {
+                        int itemClass = 0;
+                        try { itemClass = (int)item.Class; } catch { }
+                        if (itemClass != 43)
                         {
-                            // COM-Auflistungen sind 1-basiert
-                            item = items.Item(i + 1);
-                        }
-                        catch (COMException itemEx)
-                        {
-                            failedItems++;
-                            _logger.LogWarning(itemEx,
-                                "ListMails ueberspringe Item-Index {Index} (HResult=0x{HResult:X8}); " +
-                                "Item nicht lesbar im Folder {FolderName}",
-                                i + 1, itemEx.HResult, folderName);
+                            skippedNonMail++;
                             continue;
                         }
-                        try
-                        {
-                            // Class-Filter: nur olMail (43). Outlook-Ordner koennen
-                            // AppointmentItem (1), TaskItem (2), ContactItem (8),
-                            // PostItem (4), ReportItem (5) u. a. enthalten. Ohne
-                            // diesen Filter schlaegt MapMailItem fehl, sobald ein
-                            // Item eines unerwarteten Typs vorhanden ist.
-                            int itemClass = 0;
-                            try { itemClass = (int)item.Class; } catch { }
-                            if (itemClass != 43)
-                            {
-                                skippedNonMail++;
-                                continue;
-                            }
-                            slice.Add(MapMailItem(item, false, BodyFormat.Markdown, _logger));
-                        }
-                        catch (COMException mapEx)
-                        {
-                            failedItems++;
-                            _logger.LogWarning(mapEx,
-                                "ListMails ueberspringe Mail-Item {Index} (HResult=0x{HResult:X8}); " +
-                                "MapMailItem fehlgeschlagen im Folder {FolderName}",
-                                i + 1, mapEx.HResult, folderName);
-                        }
-                        catch (Exception mapEx)
-                        {
-                            failedItems++;
-                            _logger.LogError(mapEx,
-                                "ListMails unerwarteter Fehler beim Mapping von Item {Index} " +
-                                "im Folder {FolderName}", i + 1, folderName);
-                        }
-                        finally
+
+                        slice.Add(MapMailItem(item, false, bodyFormat, _logger));
+                    }
+                    catch (COMException mapEx)
+                    {
+                        failedItems++;
+                        _logger.LogWarning(mapEx,
+                            "ListMails ueberspringe Mail-Item {Index} (HResult=0x{HResult:X8}); " +
+                            "MapMailItem fehlgeschlagen im Folder {FolderName}",
+                            i + 1, mapEx.HResult, folderName);
+                    }
+                    catch (Exception mapEx)
+                    {
+                        failedItems++;
+                        _logger.LogError(mapEx,
+                            "ListMails unerwarteter Fehler beim Mapping von Item {Index} im Folder {FolderName}",
+                            i + 1, folderName);
+                    }
+                    finally
+                    {
+                        if (item is not null)
                         {
                             try { Marshal.ReleaseComObject(item); } catch { }
                         }
                     }
-                    _logger.LogInformation(
-                        "ListMails DONE folder={FolderName} returned={Returned} skippedNonMail={SkippedNonMail} " +
-                        "failedItems={FailedItems} total={Total} start={Start} end={End}",
-                        folderName, slice.Count, skippedNonMail, failedItems, total, start, end);
-                    return new PagedResult<MailMessage>
-                    {
-                        Value = slice,
-                        NextSkip = end < total ? end : (int?)null,
-                    };
                 }
-                finally
+
+                _logger.LogInformation(
+                    "ListMails DONE folder={FolderName} returned={Returned} skippedNonMail={SkippedNonMail} " +
+                    "failedItems={FailedItems} total={Total} start={Start} end={End}",
+                    folderName, slice.Count, skippedNonMail, failedItems, total, start, end);
+
+                return new PagedResult<MailMessage>
                 {
-                    Marshal.ReleaseComObject(items);
-                }
+                    Value = slice,
+                    NextSkip = end < total ? end : (int?)null,
+                };
             }
             finally
             {
+                if (items is not null)
+                {
+                    try { Marshal.ReleaseComObject(items); } catch { }
+                }
                 Marshal.ReleaseComObject(folder);
             }
         }, nameof(ListMailsAsync));
@@ -1288,7 +1396,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                             // Multi-Store-robust: iteriert session.Stores und nimmt
                             // den ersten Store, der die olId unterstuetzt. Fallback
                             // auf ns.GetDefaultFolder ist im Helper enthalten.
-                            folder = ResolveDefaultFolderSmart(ol.Value);
+                            folder = ResolveDefaultFolderByOlIdWithSchemaCheck(ol.Value);
                         }
                         catch (Exception olEx)
                         {

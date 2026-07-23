@@ -122,3 +122,30 @@ Vollstaendige Begruendung pro Code-Stelle:
 - [src/OutlookMcpServer.Domain/Abstractions/IOutlookService.cs](src/OutlookMcpServer.Domain/Abstractions/IOutlookService.cs) — `bodyFormat`-Parameter auf 8 Service-Methoden.
 - [src/OutlookMcpServer.Domain/Abstractions/IInteropOutlookAdapter.cs](src/OutlookMcpServer.Domain/Abstractions/IInteropOutlookAdapter.cs) — `bodyFormat`-Parameter auf 8 Interop-Methoden.
 - [src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs) — `TryMapMailRecipients` liest einmal `mail.Recipients` und filtert nach `.Type` (2=To, 3=CC, 4=BCC).
+
+## 2026-07-23 — list_mails-Stabilization (`45de587`)
+
+Status: accepted
+
+Kontext: Nach den BodyFormat- und Multi-Store-Features aus `24e4e46`/`df11443` zeigte sich beim Smoke-Test, dass `list_mails`/`list_mails_recursive` in manchen Profil-Konfigurationen nicht robust lief: (a) `ResolveDefaultFolderSmart` hatte Reihenfolge-Probleme — Store-Iteration vor `ns.GetDefaultFolder`, was bei Multi-Store-Profilen mit Cached-Mode/Exchange + PST je nach Store-Reihenfolge unterschiedliche Folder für dieselbe `olId` liefern konnte; (b) Notes/Journal/Tasks-Default-Folder wurden fälschlich als Mail-Folder interpretiert und lieferten `Items.Class != 43`; (c) DASL-Filter `[UnRead]` (mit großem R) wurde in manchen Outlook-Versionen stillschweigend abgelehnt und fiel auf ungefilterte Iteration zurück; (d) `ListMailsAsync`-Methode hatte inkonsistente `try/finally`-Struktur, sodass `Marshal.ReleaseComObject` in Fehlerpfaden teilweise fehlte.
+
+Entscheidung:
+1. **`ResolveDefaultFolderSmart` umstrukturiert**: Reihenfolge geändert — zuerst `ns.GetDefaultFolder(olId)`, dann Store-Iteration als Fallback (vorher umgekehrt). `ns.GetDefaultFolder` liefert im Normalfall den kanonischen Folder schneller; Store-Iteration ist nur Fallback für Profile, wo `ns.GetDefaultFolder` versagt.
+2. **Neuer `ResolveDefaultFolderByOlIdWithSchemaCheck` + `IsMailFolder`-Heuristik**: iteriert über alle Stores und prüft jeden gefundenen Folder auf `DefaultItemType == 0` (= `olMailItem`). Verhindert, dass Notes/Journal/Tasks-Folder fälschlich als Mail-Folder interpretiert werden. Wird von `ListMailsRecursiveAsync` (OutlookService-Layer) für die `olFolderId`-Auflösung genutzt.
+3. **Neuer `NormalizeDaslFilter` (adapter-side)**: Regex-basiertes `[UnRead]` → `[Unread]`-Replacement im Adapter. Redundant zum Service-Layer in `OutlookService.ListMailsRecursiveAsync`, damit auch direkte `list_mails`-Calls den Alias-Support erhalten.
+4. **`ListMailsAsync` umstrukturiert**: konsistentes `try/finally` mit defensiven `Marshal.ReleaseComObject`-Aufrufen für `items` und `folder`, Error-Handling für `Restrict`-, `Sort`-, `Count`- und `Item(i+1)`-Operationen. `Sort` an `[ReceivedTime]` kann auf manchen Foldern `0x80020009` werfen (z. B. wenn der Folder kein `ReceivedTime` unterstützt) — wird jetzt mit `COMException`-Catch abgefangen und Fallback auf unsortierte Iteration gemacht.
+5. **`ListMailsRecursiveAsync` (OutlookService-Layer)** nutzt jetzt `ResolveDefaultFolderByOlIdWithSchemaCheck` statt `ResolveDefaultFolderSmart` für die `olFolderId`-Auflösung — Schema-Check ist robuster als nur Folder-Smart-Resolve.
+
+Alternativen (verworfen):
+- `ResolveDefaultFolderSmart` komplett löschen, nur `ns.GetDefaultFolder` nutzen: verworfen, weil Multi-Store-Profile genau diesen Fallback brauchen.
+- Schema-Check im Service-Layer (statt im Adapter): verworfen, weil der Adapter näher an der COM-Boundary ist und Schema-Information (`DefaultItemType`) COM-spezifisch ist.
+- `Sort`-Aufruf ganz weglassen: verworfen, weil Caller explizit sortierte Ergebnisse erwarten (Pagination, Reihenfolge-Stabilität).
+
+Konsequenzen:
+- `OutlookInteropAdapter` umstrukturiert: `ResolveDefaultFolderSmart`, `ResolveDefaultFolderByOlIdWithSchemaCheck`, `IsMailFolder`, `NormalizeDaslFilter` neu, `ListMailsAsync` neu geschrieben.
+- `OutlookService.ListMailsAsync` und `ListMailsRecursiveAsync`: ListMailsAsync nutzt jetzt `WellKnownFolder.IsKnownMailFolder(folderId)` um zu entscheiden, ob der adapter-seitige DASL-Alias-Filter angewendet wird.
+- Robustheit: Notes-/Journal-/Tasks-Folder werden korrekt gefiltert, `[UnRead]`-Schreibweise wird toleriert, Sort-Failure wird graceful behandelt.
+- Keine API-Änderungen (alle Änderungen sind intern).
+
+Vollstaendige Begruendung pro Code-Stelle:
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs) — `ResolveDefaultFolderSmart` umstrukturiert (Reihenfolge geändert), neuer `ResolveDefaultFolderByOlIdWithSchemaCheck`, neue `IsMailFolder`-Heuristik, neuer `NormalizeDaslFilter` (adapter-side DASL-Normalisierung), `ListMailsAsync` komplett umstrukturiert (konsistentes `try/finally`, defensives `Marshal.ReleaseComObject`, Error-Handling für Sort/Count/Item-Fetch), `ListMailsRecursiveAsync`-Aufruf nutzt jetzt `ResolveDefaultFolderByOlIdWithSchemaCheck` statt `ResolveDefaultFolderSmart`.

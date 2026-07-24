@@ -3202,7 +3202,20 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                 currentItem = TryGetInspectorCurrentItem(inspector);
                 if (currentItem is null) return (ActiveItem?)null;
 
-                return MapActiveItemFromCurrentItem(currentItem, bodyFormat, _logger);
+                int objectClass = 0;
+                try { objectClass = (int)currentItem.Class; } catch { }
+                return objectClass switch
+                {
+                    43 /* olMail */ => new ActiveMail
+                    {
+                        Item = ReloadInspectorMailItem(currentItem, bodyFormat, _logger),
+                    },
+                    26 /* olAppointment */ => new ActiveEvent
+                    {
+                        Item = MapAppointmentItem(currentItem, bodyFormat),
+                    },
+                    _ => null,
+                };
             }
             finally
             {
@@ -3247,6 +3260,27 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             26 /* olAppointment */ => new ActiveEvent { Item = MapAppointmentItem(currentItem, bodyFormat) },
             _ => null,
         };
+    }
+
+    /// <summary>
+    /// Spezieller Mapping-Pfad fuer das aktuell im Inspector geoeffnete MailItem.
+    /// Statt den Body direkt vom geoeffneten Inspector-Objekt zu lesen, laden wir
+    /// das MailItem noch einmal per EntryID nach. Das ist derselbe stabile Pfad,
+    /// den auch get_mail/get_mails verwenden und vermeidet abgeschnittene oder
+    /// inkonsistente Bodies aus CurrentItem/Inspector.
+    /// </summary>
+    private MailMessage ReloadInspectorMailItem(dynamic currentItem, BodyFormat? bodyFormat, ILogger? logger = null)
+    {
+        string entryId = (string)currentItem.EntryID;
+        dynamic reloaded = GetMapiNamespace().GetItemFromID(entryId, Type.Missing);
+        try
+        {
+            return MapMailItem(reloaded, bodyFormat, logger);
+        }
+        finally
+        {
+            try { Marshal.ReleaseComObject(reloaded); } catch { }
+        }
     }
 
     public async Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(

@@ -23,9 +23,9 @@ public sealed class ActiveSelectionTools
     }
 
     [McpServerTool(Name = "get_active_item")]
-    [Description("Liefert das aktuell im aktiven Outlook-Inspector-Fenster offene Item (MailItem oder AppointmentItem). null wenn kein Inspector offen oder v1-out-of-scope Typ (Tasks/Contacts). bodyFormat steuert nur den Mail-Body von ActiveMail; AppointmentItem hat keinen Body.")]
+    [Description("Liefert das aktuell im aktiven Outlook-Inspector-Fenster offene Item (MailItem oder AppointmentItem). null wenn kein Inspector offen oder v1-out-of-scope Typ (Tasks/Contacts). bodyFormat steuert nur den Mail-Body von ActiveMail; AppointmentItem hat keinen Body. Leerer String oder null = kein Body.")]
     public async Task<ActiveItem?> GetActiveItem(
-        [Description(@"Format des Mail-Body (siehe get_mail). Default 'markdown'. Wirkt nur auf ActiveMail — ActiveEvent (AppointmentItem) hat keinen Body.")] string? bodyFormat = null,
+        [Description(@"Format des Mail-Body (siehe get_mail). Wirkt nur auf ActiveMail — ActiveEvent (AppointmentItem) hat keinen Body. Default = kein Body (null).")] string? bodyFormat = null,
         CancellationToken cancellationToken = default)
     {
         var bf = BodyFormatExtensions.ParseBodyFormat(bodyFormat);
@@ -38,7 +38,7 @@ public sealed class ActiveSelectionTools
     public async Task<IReadOnlyList<ActiveItem>> GetSelectedItems(
         [Description("Scope-Filter: 'mail' = nur Mails, 'calendar' = nur Termine, 'any' = alle (Default any).")] string scope = "any",
         [Description("Max Anzahl (1-250, Default 50).")] int top = 50,
-        [Description(@"Format des Mail-Body (siehe get_mail). Default 'markdown'. Wirkt nur auf enthaltene ActiveMails.")] string? bodyFormat = null,
+        [Description(@"Format des Mail-Body (siehe get_mail). Wirkt nur auf enthaltene ActiveMails. Default = kein Body (null).")] string? bodyFormat = null,
         CancellationToken cancellationToken = default)
     {
         var bf = BodyFormatExtensions.ParseBodyFormat(bodyFormat);

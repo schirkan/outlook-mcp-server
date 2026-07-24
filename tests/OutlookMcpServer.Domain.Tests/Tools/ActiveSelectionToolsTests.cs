@@ -46,7 +46,9 @@ public sealed class ActiveSelectionToolsTests
         var result = await tools.GetActiveItem();
 
         Assert.Null(result);
-        Assert.Contains($"{nameof(FakeOutlookService.GetActiveItemAsync)}:bodyFormat=Markdown", fake.Calls);
+        // Default bodyFormat ist null (kein Body gewuenscht).
+        Assert.Contains($"{nameof(FakeOutlookService.GetActiveItemAsync)}:bodyFormat=", fake.Calls);
+        Assert.DoesNotContain($"{nameof(FakeOutlookService.GetActiveItemAsync)}:bodyFormat=Markdown", fake.Calls);
     }
 
     [Fact]

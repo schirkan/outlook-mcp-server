@@ -1,5 +1,3 @@
-using OutlookMcpServer.Domain.Models.Common;
-
 namespace OutlookMcpServer.Domain.Tests.Fakes;
 
 /// <summary>
@@ -8,5 +6,4 @@ namespace OutlookMcpServer.Domain.Tests.Fakes;
 public sealed record ListMailsRecursiveArgs(
     IReadOnlyList<string> Scope,
     int Top,
-    string? Filter,
-    BodyFormat BodyFormat);
+    string? Filter);

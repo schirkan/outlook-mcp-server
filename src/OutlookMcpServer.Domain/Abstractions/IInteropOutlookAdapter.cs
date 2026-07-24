@@ -27,13 +27,15 @@ public interface IInteropOutlookAdapter
         int skip = 0,
         string? filter = null,
         string? search = null,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// COM-Lookup einer Mail. bodyFormat=null ⇒ kein Body-Roundtrip,
+    /// <c>MailMessage.Body</c> bleibt null.
+    /// </summary>
     Task<MailMessage> GetMailAsync(
         string id,
-        bool includeBody = true,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
+        BodyFormat? bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -41,11 +43,11 @@ public interface IInteropOutlookAdapter
     /// iteriert ueber IDs, ruft <c>Namespace.GetItemFromID</c> fuer jede.
     /// Ungueltige IDs (COMException "ItemNotFound") werden in
     /// <see cref="BulkMailResult.NotFoundIds"/> gesammelt.
+    /// bodyFormat=null ⇒ kein Body-Roundtrip.
     /// </summary>
     Task<BulkMailResult> GetMailsAsync(
         IReadOnlyList<string> ids,
-        bool includeBody = false,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
+        BodyFormat? bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<InternetMessageHeader>> GetMailHeadersAsync(
@@ -75,12 +77,12 @@ public interface IInteropOutlookAdapter
     /// dedupliziert per EntryID und liefert die neuesten <paramref name="top"/>
     /// Treffer (sortiert nach ReceivedTime DESC). Pagination: <c>NextSkip=null</c>
     /// (Hard-Cap). Bei leerem scope werden alle Default-Mailordner durchsucht.
+    /// Liefert keinen Body (Body ist immer null).
     /// </summary>
     Task<PagedResult<MailMessage>> ListMailsRecursiveAsync(
         IReadOnlyList<string> scope,
         int top,
         string? filter,
-        BodyFormat bodyFormat,
         CancellationToken cancellationToken = default);
 
     Task<SendMailResult> SendMailAsync(
@@ -118,6 +120,10 @@ public interface IInteropOutlookAdapter
         string id,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Liefert Termine in einem Zeitfenster. Body wird NICHT zurueckgegeben
+    /// (Performance; fuer Body <c>get_event</c> verwenden).
+    /// </summary>
     Task<PagedResult<CalendarEvent>> ListEventsAsync(
         string? calendarId,
         DateTimeTimeZone start,
@@ -125,12 +131,14 @@ public interface IInteropOutlookAdapter
         int top = 50,
         int skip = 0,
         string? filter = null,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Liefert einen einzelnen Termin. bodyFormat=null ⇒ kein Body-Roundtrip.
+    /// </summary>
     Task<CalendarEvent> GetEventAsync(
         string id,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
+        BodyFormat? bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     Task<string> CreateEventAsync(
@@ -159,9 +167,10 @@ public interface IInteropOutlookAdapter
     /// <summary>
     /// COM-Mapping fuer <see cref="IOutlookService.GetActiveItemAsync"/>:
     /// <c>Application.ActiveInspector()?.CurrentItem</c> + Type-Dispatch.
+    /// bodyFormat=null ⇒ kein Body-Roundtrip fuer den enthaltenen MailItem.
     /// </summary>
     Task<ActiveItem?> GetActiveItemAsync(
-        BodyFormat bodyFormat,
+        BodyFormat? bodyFormat,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -169,10 +178,11 @@ public interface IInteropOutlookAdapter
     /// <c>Application.ActiveExplorer()?.Selection</c> + Scope-Filter.
     /// ActiveExplorer()==null soll als <c>OutlookInteropException(OutlookNotActive, ...)</c>
     /// hochkommen.
+    /// bodyFormat=null ⇒ kein Body-Roundtrip fuer enthaltene ActiveMails.
     /// </summary>
     Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
         SelectionScope scope,
         int top,
-        BodyFormat bodyFormat,
+        BodyFormat? bodyFormat,
         CancellationToken cancellationToken = default);
 }

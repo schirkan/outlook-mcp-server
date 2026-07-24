@@ -73,17 +73,24 @@ public enum BodyFormat
 
 public static class BodyFormatExtensions
 {
-    /// <summary>Parst einen Caller-String (case-insensitive) zu <see cref="BodyFormat"/>.</summary>
-    public static BodyFormat ParseBodyFormat(string? value) => value?.Trim().ToLowerInvariant() switch
+    /// <summary>
+    /// Parst einen Caller-String (case-insensitive) zu <see cref="BodyFormat"/>.
+    /// <para>
+    /// <c>null</c> oder leerer String ergibt <c>null</c> als Signal, dass der Caller
+    /// explizit keinen Body zurueckbekommen moechte. Tools muessen dann
+    /// <see cref="MailMessage.Body"/> / <see cref="CalendarEvent.Body"/> = null setzen.
+    /// </para>
+    /// </summary>
+    public static BodyFormat? ParseBodyFormat(string? value) => value?.Trim().ToLowerInvariant() switch
     {
-        null or "" => BodyFormat.Markdown,
+        null or "" => null,
         "markdown" or "md" => BodyFormat.Markdown,
         "text" or "plain" or "plaintext" => BodyFormat.Text,
         "html" => BodyFormat.Html,
         _ => throw new ArgumentOutOfRangeException(
             nameof(value),
             value,
-            "Unbekanntes bodyFormat. Erlaubt: 'markdown' (Default), 'text', 'html'."),
+            "Unbekanntes bodyFormat. Erlaubt: 'markdown' (Default), 'text', 'html'. Leerer String = kein Body."),
     };
 }
 

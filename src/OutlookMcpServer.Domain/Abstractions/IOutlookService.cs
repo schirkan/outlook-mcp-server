@@ -30,13 +30,16 @@ public interface IOutlookService
         int skip = 0,
         string? filter = null,
         string? search = null,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Liest eine einzelne Mail.
+    /// <paramref name="bodyFormat"/>=null ⇒ <see cref="MailMessage.Body"/> = null
+    /// (kein Body-Lese-Roundtrip nach Outlook, schneller).
+    /// </summary>
     Task<MailMessage> GetMailAsync(
         string id,
-        bool includeBody = true,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
+        BodyFormat? bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -50,11 +53,14 @@ public interface IOutlookService
     /// wenn keine ID gefunden wurde. IDs werden vor dem Adapter-Aufruf dedupliziert
     /// (Caller-Liste darf Duplikate enthalten).
     /// </para>
+    /// <para>
+    /// <paramref name="bodyFormat"/>=null ⇒ <see cref="MailMessage.Body"/> = null
+    /// (kein Body-Lese-Roundtrip nach Outlook, schneller).
+    /// </para>
     /// </summary>
     Task<BulkMailResult> GetMailsAsync(
         IReadOnlyList<string> ids,
-        bool includeBody = false,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
+        BodyFormat? bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<InternetMessageHeader>> GetMailHeadersAsync(
@@ -81,12 +87,12 @@ public interface IOutlookService
     /// angegebenen Well-Known-Mailordner plus deren Unterordner. Liefert
     /// neueste zuerst, dedupliziert per EntryID. Hard-Cap <paramref name="top"/>
     /// (1-100). Pagination wird nicht unterstuetzt (NextSkip=null).
+    /// Liefert keinen Body (Body ist immer null).
     /// </summary>
     Task<PagedResult<MailMessage>> ListMailsRecursiveAsync(
         IReadOnlyList<string> scope,
         int top = 25,
         string? filter = null,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     // ===== Mail: Mutationen =====
@@ -130,6 +136,10 @@ public interface IOutlookService
 
     // ===== Calendar: Termine =====
 
+    /// <summary>
+    /// Liefert Termine in einem Zeitfenster. Body wird NICHT zurueckgegeben
+    /// (Performance; fuer Body <c>get_event</c> verwenden).
+    /// </summary>
     Task<PagedResult<CalendarEvent>> ListEventsAsync(
         string? calendarId,
         DateTimeTimeZone start,
@@ -137,12 +147,15 @@ public interface IOutlookService
         int top = 50,
         int skip = 0,
         string? filter = null,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Liefert einen einzelnen Termin.
+    /// <paramref name="bodyFormat"/>=null ⇒ <see cref="CalendarEvent.Body"/> = null.
+    /// </summary>
     Task<CalendarEvent> GetEventAsync(
         string id,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
+        BodyFormat? bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     // ===== Calendar: Mutationen =====
@@ -177,10 +190,10 @@ public interface IOutlookService
     /// (MailItem oder AppointmentItem). null wenn kein Inspector offen oder
     /// Item-Typ nicht in v1-Scope (Tasks/Contacts sind v1.1).
     /// <paramref name="bodyFormat"/> steuert nur den Mail-Body von ActiveMail
-    /// (AppointmentItem hat keinen Body).
+    /// (AppointmentItem hat keinen Body). null ⇒ MailBody = null (kein Roundtrip).
     /// </summary>
     Task<ActiveItem?> GetActiveItemAsync(
-        BodyFormat bodyFormat = BodyFormat.Markdown,
+        BodyFormat? bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -189,10 +202,11 @@ public interface IOutlookService
     /// Selection.Count==0 ist valides Empty-Result (kein Fehler).
     /// Wirft OutlookNotActive wenn ActiveExplorer()==null.
     /// <paramref name="bodyFormat"/> steuert nur den Mail-Body der enthaltenen ActiveMails.
+    /// null ⇒ kein Body in den ActiveMails.
     /// </summary>
     Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
         SelectionScope scope,
         int top = 50,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
+        BodyFormat? bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default);
 }

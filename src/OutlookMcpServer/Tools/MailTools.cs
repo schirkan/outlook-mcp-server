@@ -83,14 +83,12 @@ Beispiele:
 
 Hinweis: dies ist KEIN OData-Filter. Filter wie 'isRead eq false' oder 'receivedDateTime ge 2026-07-21' werden unveraendert an Outlook weitergegeben, was eine COMException ausloest. Verwende stattdessen die DASL-Syntax oben.")] string? filter = null,
         [Description(@"Optional: Volltext-Suchausdruck. Wird intern als DASL-LIKE-Filter ueber Subject und Body eingesetzt: ([Subject] LIKE '%query%' OR [Body] LIKE '%query%'). Sonderzeichen '%' und '_' werden als Wildcards interpretiert. Beispiel: 'Rechnung' findet Mails mit 'Rechnung' im Subject oder Body.")] string? search = null,
-        [Description(@"Format des Mail-Body (siehe get_mail). Default 'markdown'.")] string? bodyFormat = null,
         CancellationToken cancellationToken = default)
     {
-        var bf = BodyFormatExtensions.ParseBodyFormat(bodyFormat);
-        _logger.LogInformation("list_mails folderId={FolderId} top={Top} skip={Skip} filter={Filter} search={Search} bodyFormat={Bf}", folderId, top, skip, filter, search, bf);
+        _logger.LogInformation("list_mails folderId={FolderId} top={Top} skip={Skip} filter={Filter} search={Search}", folderId, top, skip, filter, search);
         try
         {
-            return await _service.ListMailsAsync(folderId, top, skip, filter, search, bf, cancellationToken);
+            return await _service.ListMailsAsync(folderId, top, skip, filter, search, cancellationToken);
         }
         catch (OutlookServiceException ex)
         {
@@ -119,18 +117,17 @@ Hinweis: dies ist KEIN OData-Filter. Filter wie 'isRead eq false' oder 'received
     }
 
     [McpServerTool(Name = "get_mail")]
-    [Description("Liest eine vollstaendige Mail inkl. Body.")]
+    [Description("Liest eine vollstaendige Mail. bodyFormat steuert nur das Body-Format (siehe bodyFormat-Param); leerer String oder null = kein Body zurueckgeben.")]
     public async Task<MailMessage> GetMail(
         [Description("Mail EntryID.")] string id,
-        [Description("Body einlesen (Default true) — bei false nur Header/Metadata zur Performance.")] bool includeBody = true,
-        [Description(@"Format des Mail-Body. Outlook speichert intern immer HTML — der Server konvertiert on-the-fly. Default 'markdown' (kompakt, gut lesbar fuer LLM). 'text' = Plain Text (maximal kompakt, keine Struktur). 'html' = Outlook-Original-HTML 1:1 (Word/Outlook-Styling erhalten — fuer Tabellen, eingebettete Bilder, komplexe Layouts).")] string? bodyFormat = null,
+        [Description(@"Format des Mail-Body. Outlook speichert intern immer HTML — der Server konvertiert on-the-fly. Default = kein Body (null). 'markdown' (kompakt, gut lesbar fuer LLM), 'text' (Plain Text, maximal kompakt), 'html' (Outlook-Original-HTML 1:1 — fuer Tabellen, eingebettete Bilder, komplexe Layouts).")] string? bodyFormat = null,
         CancellationToken cancellationToken = default)
     {
         var bf = BodyFormatExtensions.ParseBodyFormat(bodyFormat);
-        _logger.LogInformation("get_mail id={Id} includeBody={Inc} bodyFormat={Bf}", id, includeBody, bf);
+        _logger.LogInformation("get_mail id={Id} bodyFormat={Bf}", id, bf);
         try
         {
-            return await _service.GetMailAsync(id, includeBody, bf, cancellationToken);
+            return await _service.GetMailAsync(id, bf, cancellationToken);
         }
         catch (OutlookServiceException ex)
         {
@@ -143,7 +140,7 @@ Hinweis: dies ist KEIN OData-Filter. Filter wie 'isRead eq false' oder 'received
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "get_mail unerwarteter Fehler id={Id} includeBody={Inc}", id, includeBody);
+            _logger.LogError(ex, "get_mail unerwarteter Fehler id={Id}", id);
             throw new OutlookServiceException(
                 ErrorCode.InternalError,
                 $"get_mail: unerwarteter Fehler ({ex.GetType().Name}): {ex.Message}. " +
@@ -156,13 +153,12 @@ Hinweis: dies ist KEIN OData-Filter. Filter wie 'isRead eq false' oder 'received
     [Description("Liest mehrere Mails in einem Aufruf (Bulk-Variante von get_mail) — liefert { value: [...], notFoundIds: [...] }. Vermeidet N round-trips wenn Caller bereits eine ID-Liste hat (z. B. aus list_mails).")]
     public async Task<BulkMailResult> GetMails(
         [Description("Liste von Mail EntryIDs (1-50). Wird intern dedupliziert.")] string[] ids,
-        [Description("Body einlesen (Default false) — bei true nur wenn wirklich noetig (Performance/Cost).")] bool includeBody = false,
-        [Description(@"Format des Mail-Body (siehe get_mail). Default 'markdown'.")] string? bodyFormat = null,
+        [Description(@"Format des Mail-Body (siehe get_mail). Default = kein Body (null) — schneller, weniger Tokens. Setzen fuer Body-Inhalt.")] string? bodyFormat = null,
         CancellationToken cancellationToken = default)
     {
         var bf = BodyFormatExtensions.ParseBodyFormat(bodyFormat);
-        _logger.LogInformation("get_mails count={Count} includeBody={Inc} bodyFormat={Bf}", ids?.Length ?? 0, includeBody, bf);
-        return await _service.GetMailsAsync(ids ?? Array.Empty<string>(), includeBody, bf, cancellationToken);
+        _logger.LogInformation("get_mails count={Count} bodyFormat={Bf}", ids?.Length ?? 0, bf);
+        return await _service.GetMailsAsync(ids ?? Array.Empty<string>(), bf, cancellationToken);
     }
 
     [McpServerTool(Name = "get_mail_headers")]
@@ -249,22 +245,20 @@ Performance: kann bei grossen PSTs langsam sein (vollstaendiger Ordner-Walk). Be
         [Description(@"Optionale Komma-Liste der Well-Known-Mailordner zur Scope-Einschraenkung. Erlaubte Werte: inbox, drafts, sentItems, deletedItems, junkEmail, archive, outbox. Default = alle genannten (alle Mail-Ordner des Profils). Beispiel: 'inbox,archive' durchsucht nur Posteingang + Archiv (jeweils rekursiv).")] string? scope = null,
         [Description(@"Max Anzahl zurueckgegebener Mails (1-100, Default 25). Hard-Cap; keine Pagination. Bei mehr Treffern wird nach ReceivedTime DESC auf top limitiert; aeltere Mails gehen verloren.")] int top = 25,
         [Description(@"Optional: DASL-Filterausdruck, wird an Outlook Items.Restrict() weitergereicht. Bei ungueltiger Syntax Fallback auf ungefilterte Iteration pro Folder (Warnung im Server-Log). Haeufig genutzte Properties: [Unread] (boolean, ACHTUNG: nicht [UnRead]!), [Importance] (0=Low,1=Normal,2=High), [HasAttachments] (boolean), [ReceivedTime] (datetime, US-Format 'M/d/yyyy h:mm:ss tt'). Der Server normalisiert 'UnRead' automatisch zu 'Unread' — beides funktioniert.")] string? filter = null,
-        [Description(@"Format des Mail-Body (siehe get_mail). Default 'markdown'.")] string? bodyFormat = null,
         CancellationToken cancellationToken = default)
     {
         var scopeList = string.IsNullOrWhiteSpace(scope)
             ? Array.Empty<string>()
             : scope.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var bf = BodyFormatExtensions.ParseBodyFormat(bodyFormat);
         // Filter-Normalisierung: Tippfehler 'UnRead' (MAPI kennt nur 'Unread') wird
         // serverseitig korrigiert, damit der Restrict nicht stillschweigend fehlschlaegt.
         var normalizedFilter = NormalizeDaslFilter(filter);
         _logger.LogInformation(
-            "list_mails_recursive scope={Scope} top={Top} filter={Filter} (raw={RawFilter}) bodyFormat={Bf}",
-            string.Join(",", scopeList), top, normalizedFilter, filter, bf);
+            "list_mails_recursive scope={Scope} top={Top} filter={Filter} (raw={RawFilter})",
+            string.Join(",", scopeList), top, normalizedFilter, filter);
         try
         {
-            return await _service.ListMailsRecursiveAsync(scopeList, top, normalizedFilter, bf, cancellationToken);
+            return await _service.ListMailsRecursiveAsync(scopeList, top, normalizedFilter, cancellationToken);
         }
         catch (OutlookServiceException ex)
         {

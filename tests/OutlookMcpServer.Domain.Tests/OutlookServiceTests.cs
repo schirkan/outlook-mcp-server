@@ -298,13 +298,23 @@ public sealed class OutlookServiceTests
     }
 
     [Fact]
-    public async Task GetMailsAsync_HappyPath_CallsAdapterWithIncludeBody()
+    public async Task GetMailsAsync_HappyPath_CallsAdapterWithBodyFormat()
     {
         var adapter = new FakeInteropAdapter();
         var svc = CreateService(new OutlookOptions(), adapter);
-        await svc.GetMailsAsync(new[] { "M-1" }, includeBody: true);
+        await svc.GetMailsAsync(new[] { "M-1" }, bodyFormat: BodyFormat.Html);
         var entry = adapter.Calls.Single(c => c.StartsWith(nameof(OutlookMcpServer.Domain.Abstractions.IInteropOutlookAdapter.GetMailsAsync)));
         Assert.Contains("count=1", entry);
-        Assert.Contains("includeBody=True", entry);
+        Assert.Contains("bodyFormat=Html", entry);
+    }
+
+    [Fact]
+    public async Task GetMailsAsync_NullBodyFormat_PassesThroughAsNull()
+    {
+        var adapter = new FakeInteropAdapter();
+        var svc = CreateService(new OutlookOptions(), adapter);
+        await svc.GetMailsAsync(new[] { "M-1" }, bodyFormat: null);
+        var entry = adapter.Calls.Single(c => c.StartsWith(nameof(OutlookMcpServer.Domain.Abstractions.IInteropOutlookAdapter.GetMailsAsync)));
+        Assert.Contains("bodyFormat=", entry); // BodyFormat? formatiert null als leeres Segment
     }
 }

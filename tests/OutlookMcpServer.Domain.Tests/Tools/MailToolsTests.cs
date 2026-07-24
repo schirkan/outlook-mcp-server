@@ -181,17 +181,19 @@ public sealed class MailToolsTests
 
         var result = await tools.GetMails(
             ids: new[] { "MAIL-1", "MAIL-2", "MAIL-MISSING" },
-            includeBody: true);
+            bodyFormat: "html");
 
         Assert.Equal(2, result.Value.Count);
         Assert.Single(result.NotFoundIds);
         Assert.Equal("MAIL-MISSING", result.NotFoundIds[0]);
-        Assert.Contains(svc.Calls, c => c.StartsWith(nameof(FakeOutlookService.GetMailsAsync)));
+        var call = svc.Calls.Single(c => c.StartsWith(nameof(FakeOutlookService.GetMailsAsync)));
+        Assert.Contains("bodyFormat=Html", call);
     }
 
     [Fact]
-    public async Task GetMails_DefaultIncludeBody_False()
+    public async Task GetMails_DefaultBodyFormat_Null()
     {
+        // Per Spec: kein bodyFormat-Argument gesetzt ⇒ kein Body (=null).
         var (tools, svc) = Create();
         svc.SeedBulkMails(new[] { SampleData.Mail1() });
 
@@ -199,7 +201,21 @@ public sealed class MailToolsTests
 
         Assert.Single(result.Value);
         var call = svc.Calls.Single(c => c.StartsWith(nameof(FakeOutlookService.GetMailsAsync)));
-        Assert.Contains("includeBody=False", call);
+        Assert.Contains("bodyFormat=", call); // null rendered als leeres Segment nach =
+        Assert.DoesNotContain("bodyFormat=Markdown", call);
+    }
+
+    [Fact]
+    public async Task GetMails_EmptyBodyFormatString_NullBodyFormatPassedToService()
+    {
+        var (tools, svc) = Create();
+        svc.SeedBulkMails(new[] { SampleData.Mail1() });
+
+        var result = await tools.GetMails(ids: new[] { "MAIL-1" }, bodyFormat: "");
+
+        Assert.Single(result.Value);
+        var call = svc.Calls.Single(c => c.StartsWith(nameof(FakeOutlookService.GetMailsAsync)));
+        Assert.Contains("bodyFormat=", call); // null rendered as empty segment after =
     }
 
     [Fact]

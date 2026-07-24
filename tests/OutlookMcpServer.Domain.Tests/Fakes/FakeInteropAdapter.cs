@@ -24,22 +24,21 @@ public sealed class FakeInteropAdapter : IInteropOutlookAdapter
     public Task<MailFolder> GetMailFolderAsync(string folderId, CancellationToken cancellationToken = default)
         => throw new NotSupportedException("Adapter-Stub: not used in this test");
 
-    public Task<PagedResult<MailMessage>> ListMailsAsync(string folderId, int top = 25, int skip = 0, string? filter = null, string? search = null, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
+    public Task<PagedResult<MailMessage>> ListMailsAsync(string folderId, int top = 25, int skip = 0, string? filter = null, string? search = null, CancellationToken cancellationToken = default)
     {
         Calls.Add(nameof(ListMailsAsync));
         return Task.FromResult(new PagedResult<MailMessage> { Value = Array.Empty<MailMessage>() });
     }
 
-    public Task<MailMessage> GetMailAsync(string id, bool includeBody = true, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
+    public Task<MailMessage> GetMailAsync(string id, BodyFormat? bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
         => throw new NotSupportedException();
 
     public Task<BulkMailResult> GetMailsAsync(
         IReadOnlyList<string> ids,
-        bool includeBody = false,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
+        BodyFormat? bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(GetMailsAsync)}:count={ids.Count},includeBody={includeBody},bodyFormat={bodyFormat}");
+        Calls.Add($"{nameof(GetMailsAsync)}:count={ids.Count},bodyFormat={bodyFormat}");
         // Default: nichts gefunden, alle in notFoundIds. Caller-Tests koennen OnGetMails ueberschreiben
         // (Property existiert auf FakeOutlookService, hier nicht noetig — Service-Validation-Tests zaehlen nur Calls).
         return Task.FromResult(new BulkMailResult
@@ -70,10 +69,9 @@ public sealed class FakeInteropAdapter : IInteropOutlookAdapter
         IReadOnlyList<string> scope,
         int top,
         string? filter,
-        BodyFormat bodyFormat,
         CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(ListMailsRecursiveAsync)}:scope={string.Join(",", scope)},top={top},filter={filter ?? "(null)"},bodyFormat={bodyFormat}");
+        Calls.Add($"{nameof(ListMailsRecursiveAsync)}:scope={string.Join(",", scope)},top={top},filter={filter ?? "(null)"}");
         IReadOnlyList<MailMessage> items;
         if (OnListMailsRecursiveAsync is null)
         {
@@ -82,7 +80,7 @@ public sealed class FakeInteropAdapter : IInteropOutlookAdapter
         else
         {
             items = OnListMailsRecursiveAsync(new ListMailsRecursiveArgs(
-                new List<string>(scope), top, filter, bodyFormat));
+                new List<string>(scope), top, filter));
         }
         var slice = new List<MailMessage>(Math.Min(top, items.Count));
         for (int i = 0; i < items.Count && i < top; i++) slice.Add(items[i]);
@@ -122,10 +120,10 @@ public sealed class FakeInteropAdapter : IInteropOutlookAdapter
     public Task<Calendar> GetCalendarAsync(string id, CancellationToken cancellationToken = default)
         => throw new NotSupportedException();
 
-    public Task<PagedResult<CalendarEvent>> ListEventsAsync(string? calendarId, DateTimeTimeZone start, DateTimeTimeZone end, int top = 50, int skip = 0, string? filter = null, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
+    public Task<PagedResult<CalendarEvent>> ListEventsAsync(string? calendarId, DateTimeTimeZone start, DateTimeTimeZone end, int top = 50, int skip = 0, string? filter = null, CancellationToken cancellationToken = default)
         => Task.FromResult(new PagedResult<CalendarEvent> { Value = Array.Empty<CalendarEvent>() });
 
-    public Task<CalendarEvent> GetEventAsync(string id, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
+    public Task<CalendarEvent> GetEventAsync(string id, BodyFormat? bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
         => throw new NotSupportedException();
 
     public Task<string> CreateEventAsync(CreateEventRequest request, CancellationToken cancellationToken = default)
@@ -151,11 +149,11 @@ public sealed class FakeInteropAdapter : IInteropOutlookAdapter
 
     // ===== Active-Inspector / Selection =====
 
-    public Func<BodyFormat, CancellationToken, ActiveItem?>? OnGetActiveItem { get; set; }
-    public Func<SelectionScope, int, BodyFormat, CancellationToken, IReadOnlyList<ActiveItem>>? OnGetSelectedItems { get; set; }
+    public Func<BodyFormat?, CancellationToken, ActiveItem?>? OnGetActiveItem { get; set; }
+    public Func<SelectionScope, int, BodyFormat?, CancellationToken, IReadOnlyList<ActiveItem>>? OnGetSelectedItems { get; set; }
 
     public Task<ActiveItem?> GetActiveItemAsync(
-        BodyFormat bodyFormat,
+        BodyFormat? bodyFormat,
         CancellationToken cancellationToken = default)
     {
         Calls.Add($"{nameof(GetActiveItemAsync)}:bodyFormat={bodyFormat}");
@@ -166,7 +164,7 @@ public sealed class FakeInteropAdapter : IInteropOutlookAdapter
     public Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
         SelectionScope scope,
         int top,
-        BodyFormat bodyFormat,
+        BodyFormat? bodyFormat,
         CancellationToken cancellationToken = default)
     {
         Calls.Add($"{nameof(GetSelectedItemsAsync)}:scope={scope},top={top},bodyFormat={bodyFormat}");

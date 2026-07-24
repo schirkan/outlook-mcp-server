@@ -46,9 +46,9 @@ public sealed class FakeOutlookService : IOutlookService
         throw new KeyNotFoundException(folderId);
     }
 
-    public Task<PagedResult<MailMessage>> ListMailsAsync(string folderId, int top = 25, int skip = 0, string? filter = null, string? search = null, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
+    public Task<PagedResult<MailMessage>> ListMailsAsync(string folderId, int top = 25, int skip = 0, string? filter = null, string? search = null, CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(ListMailsAsync)}:folder={folderId},top={top},skip={skip},filter={filter},search={search},bodyFormat={bodyFormat}");
+        Calls.Add($"{nameof(ListMailsAsync)}:folder={folderId},top={top},skip={skip},filter={filter},search={search}");
         var query = _mails.Values.AsEnumerable();
         if (!string.IsNullOrWhiteSpace(search))
         {
@@ -62,9 +62,9 @@ public sealed class FakeOutlookService : IOutlookService
         });
     }
 
-    public Task<MailMessage> GetMailAsync(string id, bool includeBody = true, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
+    public Task<MailMessage> GetMailAsync(string id, BodyFormat? bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(GetMailAsync)}:id={id},includeBody={includeBody},bodyFormat={bodyFormat}");
+        Calls.Add($"{nameof(GetMailAsync)}:id={id},bodyFormat={bodyFormat}");
         ThrowIfInjected();
         if (OnGetMail is not null)
         {
@@ -75,7 +75,7 @@ public sealed class FakeOutlookService : IOutlookService
         throw new KeyNotFoundException(id);
     }
 
-    public Func<IReadOnlyList<string>, bool, IReadOnlyList<MailMessage>>? OnGetMails { get; set; }
+    public Func<IReadOnlyList<string>, BodyFormat?, IReadOnlyList<MailMessage>>? OnGetMails { get; set; }
     private readonly Dictionary<string, MailMessage> _seededBulkMails = new();
 
     public void SeedBulkMails(IEnumerable<MailMessage> mails)
@@ -85,15 +85,14 @@ public sealed class FakeOutlookService : IOutlookService
 
     public Task<BulkMailResult> GetMailsAsync(
         IReadOnlyList<string> ids,
-        bool includeBody = false,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
+        BodyFormat? bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(GetMailsAsync)}:count={ids.Count},includeBody={includeBody},bodyFormat={bodyFormat}");
+        Calls.Add($"{nameof(GetMailsAsync)}:count={ids.Count},bodyFormat={bodyFormat}");
         ThrowIfInjected();
         if (OnGetMails is not null)
         {
-            return Task.FromResult(BuildBulkResultFromOverride(OnGetMails(ids, includeBody), ids));
+            return Task.FromResult(BuildBulkResultFromOverride(OnGetMails(ids, bodyFormat), ids));
         }
         return Task.FromResult(BuildBulkResultFromSeed(ids));
     }
@@ -168,10 +167,9 @@ public sealed class FakeOutlookService : IOutlookService
         IReadOnlyList<string> scope,
         int top = 25,
         string? filter = null,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(ListMailsRecursiveAsync)}:scope={string.Join(",", scope)},top={top},filter={filter ?? "(null)"},bodyFormat={bodyFormat}");
+        Calls.Add($"{nameof(ListMailsRecursiveAsync)}:scope={string.Join(",", scope)},top={top},filter={filter ?? "(null)"}");
         // Default-Fake: leere Liste (Tests, die Inhalte brauchen, nehmen besser FakeInteropAdapter direkt).
         return Task.FromResult(new PagedResult<MailMessage> { Value = Array.Empty<MailMessage>(), NextSkip = null });
     }
@@ -228,14 +226,14 @@ public sealed class FakeOutlookService : IOutlookService
         throw new KeyNotFoundException(id);
     }
 
-    public Task<PagedResult<CalendarEvent>> ListEventsAsync(string? calendarId, DateTimeTimeZone start, DateTimeTimeZone end, int top = 50, int skip = 0, string? filter = null, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
+    public Task<PagedResult<CalendarEvent>> ListEventsAsync(string? calendarId, DateTimeTimeZone start, DateTimeTimeZone end, int top = 50, int skip = 0, string? filter = null, CancellationToken cancellationToken = default)
     {
-        Calls.Add($"{nameof(ListEventsAsync)}:cal={calendarId},window={start.DateTime}/{end.DateTime},top={top},skip={skip},filter={filter},bodyFormat={bodyFormat}");
+        Calls.Add($"{nameof(ListEventsAsync)}:cal={calendarId},window={start.DateTime}/{end.DateTime},top={top},skip={skip},filter={filter}");
         var list = _events.Values.Skip(skip).Take(top).ToList();
         return Task.FromResult(new PagedResult<CalendarEvent> { Value = list });
     }
 
-    public Task<CalendarEvent> GetEventAsync(string id, BodyFormat bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
+    public Task<CalendarEvent> GetEventAsync(string id, BodyFormat? bodyFormat = BodyFormat.Markdown, CancellationToken cancellationToken = default)
     {
         Calls.Add($"{nameof(GetEventAsync)}:id={id},bodyFormat={bodyFormat}");
         if (_events.TryGetValue(id, out var e)) return Task.FromResult(e);
@@ -274,8 +272,8 @@ public sealed class FakeOutlookService : IOutlookService
 
     // ===== Active-Inspector / Selection (Fakes fuer Tests) =====
 
-    public Func<BodyFormat, CancellationToken, ActiveItem?>? OnGetActiveItem { get; set; }
-    public Func<SelectionScope, int, BodyFormat, CancellationToken, IReadOnlyList<ActiveItem>>? OnGetSelectedItems { get; set; }
+    public Func<BodyFormat?, CancellationToken, ActiveItem?>? OnGetActiveItem { get; set; }
+    public Func<SelectionScope, int, BodyFormat?, CancellationToken, IReadOnlyList<ActiveItem>>? OnGetSelectedItems { get; set; }
     private readonly List<ActiveItem> _seededSelectedItems = new();
     private ActiveItem? _seededActiveItem;
 
@@ -288,7 +286,7 @@ public sealed class FakeOutlookService : IOutlookService
     public void ClearSelectedItems() => _seededSelectedItems.Clear();
 
     public Task<ActiveItem?> GetActiveItemAsync(
-        BodyFormat bodyFormat = BodyFormat.Markdown,
+        BodyFormat? bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
         Calls.Add($"{nameof(GetActiveItemAsync)}:bodyFormat={bodyFormat}");
@@ -300,7 +298,7 @@ public sealed class FakeOutlookService : IOutlookService
     public Task<IReadOnlyList<ActiveItem>> GetSelectedItemsAsync(
         SelectionScope scope,
         int top = 50,
-        BodyFormat bodyFormat = BodyFormat.Markdown,
+        BodyFormat? bodyFormat = BodyFormat.Markdown,
         CancellationToken cancellationToken = default)
     {
         Calls.Add($"{nameof(GetSelectedItemsAsync)}:scope={scope},top={top},bodyFormat={bodyFormat}");

@@ -149,3 +149,98 @@ Konsequenzen:
 
 Vollstaendige Begruendung pro Code-Stelle:
 - [src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs) — `ResolveDefaultFolderSmart` umstrukturiert (Reihenfolge geändert), neuer `ResolveDefaultFolderByOlIdWithSchemaCheck`, neue `IsMailFolder`-Heuristik, neuer `NormalizeDaslFilter` (adapter-side DASL-Normalisierung), `ListMailsAsync` komplett umstrukturiert (konsistentes `try/finally`, defensives `Marshal.ReleaseComObject`, Error-Handling für Sort/Count/Item-Fetch), `ListMailsRecursiveAsync`-Aufruf nutzt jetzt `ResolveDefaultFolderByOlIdWithSchemaCheck` statt `ResolveDefaultFolderSmart`.
+
+## 2026-07-24 — BodyFormat-Nullability + includeBody-Entfernung (`f40a4a8`)
+
+Status: accepted
+
+Kontext: BodyFormat-API bisher: Default = `markdown`, alle 8 Read-Tools hatten einen `bodyFormat`-Parameter. Zwei Probleme: (a) Listen-Tools wie `list_mails` lieferten Bodies automatisch mit — bei 100 Mails viel Token-Verbrauch (Outlook-HTML gross), und das Parsen/Serialisieren verschwendet CPU; (b) separater `includeBody`-Parameter war redundant — wer `includeBody=false` setzt, will keinen Body, also ist `bodyFormat=null` (= kein Body) die sauberere Loesung. Der neue Default `null` macht "kein Body" zum Standardverhalten und zwingt Caller, explizit `bodyFormat="markdown"` zu setzen wenn sie Bodies brauchen.
+
+Entscheidung: Komplette bodyFormat-API-Umstellung:
+- **Vier Tools OHNE `bodyFormat`**: `list_mails`, `list_mails_recursive`, `search_mails`, `list_events` — liefern nie einen Body (Header-only Listen-Calls).
+- **Fuenf Tools MIT `bodyFormat` (nullable)**: `get_mail`, `get_mails`, `get_event`, `get_active_item`, `get_selected_items`. `null` = kein Body, sonst `markdown`/`text`/`html`.
+- `includeBody`-Parameter komplett entfernt aus allen 6 betroffenen Tools (war redundant zu `bodyFormat=null`).
+- `BodyFormatExtensions.ParseBodyFormat` gibt jetzt `BodyFormat?` zurueck (null bei null/empty statt Default `markdown`).
+
+Alternativen (verworfen):
+- `bodyFormat` als verbindliches Pflicht-Feld fuer Item-Tools: zwingt Caller zum Mitsenden, schlechtere DX.
+- `includeBody` + `bodyFormat` als zwei separate Parameter beibehalten: redundante API.
+- Default = `markdown` beibehalten: Performance-Problem bei grossen Listen bleibt.
+
+Konsequenzen:
+- 14 Files, +182/-149.
+- `specs/API-DESIGN.md`, `README.md`, `PROJECT.md`, `DECISIONS.md` alle vier angepasst (Breaking Change → vollstaendige Doku-Sync-Pflicht).
+- Tool-Count bleibt **27** (keine neuen Tools, nur Parameter-Umstellung).
+- Performance-Gewinn bei `list_mails`-Calls: keine Body-Konvertierung mehr in 99% der Faelle.
+- Token-Ersparnis: Outlook-Bodies koennen 5-50 KB pro Mail sein, bei Listen mit 100 Mails sind das 500 KB - 5 MB pro Call.
+
+Vollstaendige Begruendung pro Code-Stelle:
+- [src/OutlookMcpServer/Tools/MailTools.cs](src/OutlookMcpServer/Tools/MailTools.cs) — `bodyFormat`-Parameter aus `list_mails`/`list_mails_recursive` entfernt; `includeBody` aus `get_mail`/`get_mails` entfernt; `bodyFormat`-Default-Semantik auf `null` umgestellt.
+- [src/OutlookMcpServer/Tools/CalendarTools.cs](src/OutlookMcpServer/Tools/CalendarTools.cs) — `bodyFormat`-Parameter aus `list_events` entfernt; `get_event` auf nullable `BodyFormat?` umgestellt.
+- [src/OutlookMcpServer/Tools/ActiveSelectionTools.cs](src/OutlookMcpServer/Tools/ActiveSelectionTools.cs) — `get_active_item`/`get_selected_items` auf nullable `BodyFormat?` umgestellt (Default = kein Body).
+- [src/OutlookMcpServer.Domain/Models/Common/CommonModels.cs](src/OutlookMcpServer.Domain/Models/Common/CommonModels.cs) — `BodyFormatExtensions.ParseBodyFormat` gibt jetzt `BodyFormat?` zurueck.
+- [src/OutlookMcpServer.Domain/Abstractions/IOutlookService.cs](src/OutlookMcpServer.Domain/Abstractions/IOutlookService.cs) — Signaturen angepasst: `BodyFormat?`-Parameter auf 5 Methoden, kein Parameter auf 4 Methoden.
+- [src/OutlookMcpServer.Domain/Abstractions/IInteropOutlookAdapter.cs](src/OutlookMcpServer.Domain/Abstractions/IInteropOutlookAdapter.cs) — gleiche Signatur-Anpassungen auf Adapter-Layer.
+- [tests/OutlookMcpServer.Domain.Tests/Fakes/*](tests/OutlookMcpServer.Domain.Tests/Fakes/) — `FakeOutlookService` + `FakeInteropAdapter` an neue Signaturen angepasst.
+- [tests/OutlookMcpServer.Domain.Tests/Tools/MailToolsTests.cs](tests/OutlookMcpServer.Domain.Tests/Tools/MailToolsTests.cs) — Tests an neue Signaturen angepasst (keine `includeBody`-Tests mehr, `bodyFormat`-Tests pruefen nullable-Verhalten).
+
+## 2026-07-24 — Active-Mail EntryID-Reload (`e4b2591`)
+
+Status: accepted
+
+Kontext: `get_active_item` fuer `MailItem` hatte eine experimentelle WordEditor-basierte Body-Extraktion, die unzuverlaessige Ergebnisse lieferte (Word-Range-Objekte sind fluechtig, Inspector-Kontext kann waehrend des Reads kippen). Die anderen Mail-Lese-Tools (`get_mail`, `get_mails`) nutzen den `Namespace.GetItemFromID(EntryID)`-Pfad — stabil, getestet, konsistent.
+
+Entscheidung: `OutlookInteropAdapter.GetActiveItemAsync` fuer Mail-Pfad umgestellt: aktives `MailItem.EntryID` extrahieren → via `Namespace.GetItemFromID(EntryID)` neu laden → dann wie `get_mail` mappen. WordEditor-Pfad entfernt. `get_selected_items` unveraendert (kein Inspector-Kontext dort, EntryID-Reload nicht noetig — Selection-Items sind bereits EntryID-stabil).
+
+Alternativen (verworfen):
+- WordEditor-Pfad stabilisieren: hoher Aufwand, marginaler Nutzen (Word-Editor-API ist nicht fuer Server-Use-Case gedacht).
+- Auf Inspector-Item direkt arbeiten (ohne Reload): funktioniert in 90% der Faelle, aber die Edge-Cases (Inspector-Wechsel waehrend Reads, COM-RCW-Inkonsistenzen) sind genau die, die in Produktion weh tun.
+
+Konsequenzen:
+- Konsistentes Body-Verhalten zwischen `get_active_item` und `get_mail`/`get_mails`.
+- Eliminiert eine Klasse von sporadischen Body-Lese-Fehlern.
+- 1 File, +35/-1.
+
+Vollstaendige Begruendung pro Code-Stelle:
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs) — `GetActiveItemAsync` Mail-Pfad: WordEditor entfernt, `EntryID` + `Namespace.GetItemFromID`-Reload eingebaut. (Datei existiert nur bis `87e5896`; danach wandert die Logik in `OutlookInteropAdapter.ActiveSelection.cs`.)
+
+## 2026-07-24 — `OutlookInteropAdapter`-Partial-Split (`87e5896`)
+
+Status: accepted
+
+Kontext: `OutlookInteropAdapter.cs` war mit 2971 Zeilen die groesste Klasse im Repo — ein "Gott-Objekt" mit Mail-Reads, Mail-Writes, Mail-Mapping, Calendar-Reads, Calendar-Writes, Calendar-Mapping, Active-Selection, Common-Helpers in einer Datei. Navigation, Refactoring, und Code-Reviews litten darunter; jede Aenderung touchte potentiell unrelated Code.
+
+Entscheidung: Aufteilung in 8 thematische Partials via C# `partial class`-Mechanik:
+- `OutlookInteropAdapter.ActiveSelection.cs` (~59 LOC) — `GetActiveItemAsync`, `GetSelectedItemsAsync`
+- `OutlookInteropAdapter.Calendar.cs` (~201 LOC) — `ListCalendarsAsync`, `GetCalendarAsync`, `ListEventsAsync`, `GetEventAsync`
+- `OutlookInteropAdapter.CalendarMapping.cs` (~369 LOC) — `MapAppointmentItem` + Sub-Helpers
+- `OutlookInteropAdapter.CalendarMutations.cs` (~331 LOC) — `CreateEventAsync`, `UpdateEventAsync`, `DeleteEventAsync`, `RespondToEventAsync`, `FindMeetingTimesAsync`
+- `OutlookInteropAdapter.Common.cs` (~132 LOC) — Shared Helpers (`EnsureOutlookInitialized`, `ReleaseComObject`, etc.)
+- `OutlookInteropAdapter.Mail.cs` (~1001 LOC) — `ListMailsAsync`, `GetMailAsync`, `GetMailsAsync`, `ListMailsRecursiveAsync`, `SearchMailsAsync`
+- `OutlookInteropAdapter.MailMapping.cs` (~316 LOC) — `MapMailItem` + Sub-Helpers (`TryMapMailRecipients`, etc.)
+- `OutlookInteropAdapter.MailMutations.cs` (~326 LOC) — `SendMailAsync`, `CreateDraftAsync`, `UpdateMailAsync`, `MoveMailAsync`, `CopyMailAsync`, `DeleteMailAsync`, `GetMailHeadersAsync`, `ListAttachmentsAsync`, `GetAttachmentAsync`
+- `OutlookInteropAdapter.cs` (Core-Stub, ~12 LOC) — Partial-Klassen-Deklaration + ctor + Fields
+
+**Keine API-Aenderungen** — alle oeffentlichen Methoden via Partial-Mechanik erhalten, gleiche Signaturen, gleiche Semantik. Bestehende Tests bleiben unveraendert gruen.
+
+Alternativen (verworfen):
+- Komplett-Refactor in mehrere separate Klassen (Composition ueber Vererbung): groesserer API-Bruch, alle Caller muessten angepasst werden.
+- Aufteilung nach Feature-Set (Reads vs. Mutations): orthogonal zur Themen-Aufteilung, wuerde Cross-Cutting-Concerns (z. B. `MapMailItem` fuer Reads + Mutations) duplizieren.
+
+Konsequenzen:
+- 9 Files, +2767/-2961.
+- Bessere Navigation (jedes Partial ~60-1000 LOC statt 2971 in einem File).
+- Compile-Zeiten leicht reduziert (Partials werden parallel kompiliert).
+- Reviewer koennen thematische Aenderungen isoliert betrachten (z. B. nur `MailMutations` diff beim Review eines Mutation-Patches).
+- Vorbereitung fuer weitere Sub-Aufteilungen (z. B. wenn `OutlookInteropAdapter.Mail.cs` mit 1001 LOC selbst noch zu gross wird).
+
+Vollstaendige Begruendung pro Code-Stelle:
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.cs) — Core-Stub (Partial-Klassen-Deklaration + ctor + Fields).
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.ActiveSelection.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.ActiveSelection.cs) — `GetActiveItemAsync`, `GetSelectedItemsAsync`.
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.Calendar.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.Calendar.cs) — `ListCalendarsAsync`, `GetCalendarAsync`, `ListEventsAsync`, `GetEventAsync`.
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.CalendarMapping.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.CalendarMapping.cs) — `MapAppointmentItem` + Sub-Helpers.
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.CalendarMutations.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.CalendarMutations.cs) — `CreateEventAsync`, `UpdateEventAsync`, `DeleteEventAsync`, `RespondToEventAsync`, `FindMeetingTimesAsync`.
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.Common.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.Common.cs) — Shared Helpers (`EnsureOutlookInitialized`, `ReleaseComObject`, etc.).
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.Mail.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.Mail.cs) — `ListMailsAsync`, `GetMailAsync`, `GetMailsAsync`, `ListMailsRecursiveAsync`, `SearchMailsAsync`.
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.MailMapping.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.MailMapping.cs) — `MapMailItem` + Sub-Helpers (`TryMapMailRecipients`, etc.).
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.MailMutations.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.MailMutations.cs) — `SendMailAsync`, `CreateDraftAsync`, `UpdateMailAsync`, `MoveMailAsync`, `CopyMailAsync`, `DeleteMailAsync`, `GetMailHeadersAsync`, `ListAttachmentsAsync`, `GetAttachmentAsync`.

@@ -8,7 +8,7 @@ MCP-Server (Model Context Protocol) for accessing a **classic** Outlook installa
 
 ### Mail (read)
 - `list_mail_folders` / `get_mail_folder` — list + retrieve folders incl. well-known names (`inbox`, `drafts`, `sentItems`, `deletedItems`, `junkEmail`, `archive`, `outbox`)
-- `list_mails` / `get_mail` / `get_mails` (bulk) / `search_mails` / `list_mails_recursive` — list/get/search mails with body, headers, attachments; bulk-get reads up to 50 EntryIDs in one call (returns `{ value, notFoundIds }`); recursive variant walks folder hierarchy with property-filter support (e.g. `[Unread]=true`). Mail-Body is converted on-the-fly from Outlook's internal HTML via `HtmlBodyConverter` (ReverseMarkdown-based); format selectable per `bodyFormat`-Parameter (`markdown` default / `text` / `html`) across all read tools.
+- `list_mails` / `get_mail` / `get_mails` (bulk) / `search_mails` / `list_mails_recursive` — list/get/search mails with body, headers, attachments; bulk-get reads up to 50 EntryIDs in one call (returns `{ value, notFoundIds }`); recursive variant walks folder hierarchy with property-filter support (e.g. `[Unread]=true`). **`get_mail`/`get_mails`** haben einen `bodyFormat`-Parameter (`markdown`/`text`/`html`, Default `null` = kein Body); **`list_mails`/`list_mails_recursive`/`search_mails`** liefern keinen Body (Header-only Listen-Calls — spart Tokens + Performance). Mail-Body wird on-the-fly aus Outlook-HTML via `HtmlBodyConverter` (ReverseMarkdown-basiert) konvertiert.
 - `get_mail_headers` — internet headers (From/To headers, DKIM, routing)
 - `list_attachments` / `get_attachment` — attachment summary + Base64-encoded content
 
@@ -21,8 +21,8 @@ MCP-Server (Model Context Protocol) for accessing a **classic** Outlook installa
 
 ### Calendar (read)
 - `list_calendars` / `get_calendar` — all calendars in profile + default-calendar flag
-- `list_events` — time-window query (Start/End, IANA-TZ) with optional calendar scope; supports `bodyFormat`-Parameter (`markdown` default / `text` / `html`)
-- `get_event` — full event incl. attendees, organizer, body, recurrence; supports `bodyFormat`-Parameter (`markdown` default / `text` / `html`)
+- `list_events` — time-window query (Start/End, IANA-TZ) with optional calendar scope; **kein Body** (Header-only Listen-Call)
+- `get_event` — full event incl. attendees, organizer, body, recurrence; supports `bodyFormat`-Parameter (`markdown`/`text`/`html`, Default `null` = kein Body)
 
 ### Calendar (write)
 - `create_event` — with optional attendees (Required/Optional/Resource) + invitations

@@ -46,7 +46,8 @@ Tool-Eingaben sind JSON-Objekte; Tool-Ausgaben sind JSON-Objekte. Datums-/Zeit-W
 - `skip` (int, default 0)
 - `filter` (optional, string): Outlook-DASL-Filter (z. B. `"@SQL=urn:schemas:httpmail:subject LIKE '%urgent%'"`)
 - `search` (optional, string): Volltext-Quicksearch über Subject + BodyPreview (Outlook-InstanteSearch)
-- `bodyFormat` (optional, string): Format des `MailMessage.body.content`. Erlaubte Werte: `markdown` (Default, kompakt, LLM-freundlich), `text` (Plain Text, maximal kompakt), `html` (Outlook-Original-HTML 1:1). Outlook speichert intern immer HTML — der Server konvertiert on-the-fly via `HtmlBodyConverter` (ReverseMarkdown-basiert).
+
+> **Hinweis (geändert 2026-07-24):** `list_mails` liefert **keinen Body**. Wer Body-Inhalt braucht, muss die Mail-IDs aus `list_mails` ziehen und via `get_mail` mit `bodyFormat="markdown"|"text"|"html"` explizit laden. Das spart Tokens + Performance bei typischen Listen-Calls.
 
 **Output**:
 ```json
@@ -75,8 +76,7 @@ Tool-Eingaben sind JSON-Objekte; Tool-Ausgaben sind JSON-Objekte. Datums-/Zeit-W
 
 **Input**:
 - `id` (string, required)
-- `includeBody` (bool, default true) — bei `false` nur Header/Metadata zur Performance
-- `bodyFormat` (optional, string): Format des `MailMessage.body.content`. Erlaubte Werte: `markdown` (Default), `text`, `html`. Outlook speichert intern immer HTML — der Server konvertiert on-the-fly.
+- `bodyFormat` (optional, string): Format des `MailMessage.body.content`. Erlaubte Werte: `markdown`, `text`, `html`. Outlook speichert intern immer HTML — der Server konvertiert on-the-fly. Default = `null` (kein Body); explizit setzen um Body zu laden.
 **Output**:
 ```json
 {
@@ -106,8 +106,7 @@ zu jeder Mail den Body braucht.
 
 **Input**:
 - `ids` (string[], required, 1-50) — Liste von Mail EntryIDs; wird intern dedupliziert
-- `includeBody` (bool, default false) — bei true wird der Voll-Body mitgeladen (teuer; Production-Default ist false weil Body-Inhalt oft groß)
-- `bodyFormat` (optional, string): Format des Mail-Body. Erlaubte Werte: `markdown` (Default), `text`, `html`. Wirkt nur wenn `includeBody=true`.
+- `bodyFormat` (optional, string): Format des Mail-Body. Erlaubte Werte: `markdown`, `text`, `html`. Default = `null` (kein Body); explizit setzen um Body zu laden.
 
 **Output**:
 ```json
@@ -212,7 +211,8 @@ Limit: `MaxAttachmentBytes` aus Config.
 - `scope` (optional, string): Komma-Liste der Well-Known-Mailordner. Erlaubte Werte: `inbox, drafts, sentItems, deletedItems, junkEmail, archive, outbox`. Leer/Null = alle Mail-Ordner des Profils. Beispiel: `inbox,archive` durchsucht nur Posteingang + Archiv (jeweils rekursiv).
 - `top` (int, default 25, max 100): Hard-Cap; keine Pagination. Bei mehr Treffern wird nach ReceivedTime DESC auf `top` limitiert; ältere Mails gehen verloren.
 - `filter` (optional, string): DASL-Filterausdruck, wird an Outlook `Items.Restrict()` weitergereicht. Bei ungültiger Syntax Fallback auf ungefilterte Iteration pro Folder (Warnung im Server-Log). Häufig genutzte Properties: `[Unread]` (boolean, ACHTUNG: nicht `[UnRead]`!), `[Importance]` (0=Low, 1=Normal, 2=High), `[HasAttachments]` (boolean), `[ReceivedTime]` (datetime, US-Format `M/d/yyyy h:mm:ss tt`). Der Server normalisiert `[UnRead]` automatisch zu `[Unread]` — beides funktioniert.
-- `bodyFormat` (optional, string): Format des Mail-Body. Erlaubte Werte: `markdown` (Default), `text`, `html`.
+
+> **Hinweis (geändert 2026-07-24):** `list_mails_recursive` liefert **keinen Body**. Für Body-Inhalt: EntryIDs aus dem Result ziehen + `get_mails` (Bulk) oder `get_mail` (einzeln) aufrufen.
 
 **Output**: wie `listMails` (`PagedResult<MailMessage>`)
 
@@ -250,7 +250,8 @@ Limit: `MaxAttachmentBytes` aus Config.
 - `top` (int, default 50, max 250)
 - `skip` (int, default 0)
 - `filter` (optional, string): z. B. `"showAs eq 'busy'"` (einfache Equality-Filter, intern auf DASL gemappt)
-- `bodyFormat` (optional, string): Format des `CalendarEvent.body.content`. Erlaubte Werte: `markdown` (Default), `text`, `html`. Calendar verwendet denselben `HtmlBodyConverter` wie Mail — verhindert Word/Outlook-Styling-Bloat bei LLM-Consumern.
+
+> **Hinweis (geändert 2026-07-24):** `list_events` liefert **keinen Body**. Für Body-Inhalt: EntryIDs aus dem Result ziehen + `get_event` mit `bodyFormat` aufrufen. Calendar verwendet denselben `HtmlBodyConverter` wie Mail — verhindert Word/Outlook-Styling-Bloat bei LLM-Consumern.
 
 **Output**:
 ```json
@@ -285,7 +286,7 @@ Limit: `MaxAttachmentBytes` aus Config.
 
 **Input**:
 - `id` (string, required)
-- `bodyFormat` (optional, string): Format des Termin-Body. Erlaubte Werte: `markdown` (Default), `text`, `html`.
+- `bodyFormat` (optional, string): Format des `CalendarEvent.body.content`. Erlaubte Werte: `markdown`, `text`, `html`. Outlook speichert intern immer HTML — der Server konvertiert on-the-fly. Default = `null` (kein Body); explizit setzen um Body zu laden.
 **Output**: einzelnes Event (Properties wie oben + `body`, `hasAttachments`, `recurrence`)
 
 ### `createEvent`
@@ -356,7 +357,7 @@ Wichtig: alle diese Tools sind **read-only auf den UI-State**. Sie öffnen oder 
 **Beschreibung**: Liefert das Item, das aktuell im Vordergrund-Inspector-Fenster offen ist (Doppelklick auf eine Mail / einen Termin). Ein typischer Use-Case: „Fasse die Mail zusammen, die ich gerade offen habe" oder „lege einen Folgetermin an, basierend auf dem Termin, der gerade offen ist".
 
 **Input**:
-- `bodyFormat` (optional, string): Format des Mail-Body. Erlaubte Werte: `markdown` (Default), `text`, `html`. Wirkt nur auf `ActiveMail` — `ActiveEvent` (AppointmentItem) hat keinen Body.
+- `bodyFormat` (optional, string): Format des Mail-Body. Erlaubte Werte: `markdown`, `text`, `html`. Wirkt nur auf `ActiveMail` — `ActiveEvent` (AppointmentItem) hat keinen Body. Default = `null` (kein Body).
 
 **Output** (polymorph, diskriminiert via `kind`):
 ```json
@@ -389,7 +390,7 @@ return current switch
 **Input**:
 - `scope` (optional, string, default `"any"`): `"mail"` | `"calendar"` | `"any"` — filtert auf Item-Typen.
 - `top` (optional, int, default 50, max 250): harte Obergrenze, schützt vor zu großen Selection-Batches.
-- `bodyFormat` (optional, string): Format des Mail-Body. Erlaubte Werte: `markdown` (Default), `text`, `html`. Wirkt nur auf enthaltene `ActiveMails`.
+- `bodyFormat` (optional, string): Format des Mail-Body. Erlaubte Werte: `markdown`, `text`, `html`. Wirkt nur auf enthaltene `ActiveMails`. Default = `null` (kein Body).
 
 **Output**:
 ```json

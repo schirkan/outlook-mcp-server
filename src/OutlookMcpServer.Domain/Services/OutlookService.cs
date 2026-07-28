@@ -337,6 +337,14 @@ public sealed class OutlookService : IOutlookService
         return _adapter.FindMeetingTimesAsync(request, cancellationToken);
     }
 
+    public Task<OpenItemResult> OpenItemByIdAsync(
+        string id,
+        CancellationToken cancellationToken = default)
+    {
+        ValidationHelpers.ValidateStringNotEmpty(id, nameof(id));
+        return _adapter.OpenItemByIdAsync(id, cancellationToken);
+    }
+
     // ===== Active-Inspector / Selection (COM-only) =====
 
     public Task<ActiveItem?> GetActiveItemAsync(

@@ -183,6 +183,13 @@ public interface IOutlookService
         FindMeetingTimesRequest request,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Oeffnet ein Outlook-Item per EntryID in einem Inspector-Fenster.
+    /// </summary>
+    Task<OpenItemResult> OpenItemByIdAsync(
+        string id,
+        CancellationToken cancellationToken = default);
+
     // ===== Active-Inspector / Selection (COM-only, kein Graph-Aequivalent) =====
 
     /// <summary>

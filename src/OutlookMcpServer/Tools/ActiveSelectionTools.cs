@@ -47,6 +47,16 @@ public sealed class ActiveSelectionTools
         return await _service.GetSelectedItemsAsync(parsedScope, top, bf, cancellationToken);
     }
 
+    [McpServerTool(Name = "open_item_by_id")]
+    [Description("Oeffnet ein Outlook-Item per EntryID in einem Inspector-Fenster. Geeignet fuer MailItem und AppointmentItem, sofern Outlook den Typ anzeigen kann.")]
+    public async Task<OpenItemResult> OpenItemById(
+        [Description("Outlook EntryID des zu oeffnenden Items.")] string id,
+        CancellationToken cancellationToken = default)
+    {
+        _logger.LogInformation("open_item_by_id id={Id}", id);
+        return await _service.OpenItemByIdAsync(id, cancellationToken);
+    }
+
     private static SelectionScope ParseSelectionScope(string? value) => (value ?? "any").Trim().ToLowerInvariant() switch
     {
         "mail" => SelectionScope.Mail,

@@ -350,7 +350,7 @@ Implementierung: iteriere `Items.Find` über den Self-Calendar im Zeitfenster, b
 
 Diese Tools sind ein **Alleinstellungsmerkmal von COM-Interop gegenüber Microsoft Graph** — Graph ist Server-seitig und hat keinen Zugriff auf den lokalen Outlook-UI-State. Die COM-Properties `Application.ActiveInspector()`, `Inspector.CurrentItem`, `Application.ActiveExplorer()` und `Explorer.Selection` liefern genau diesen State.
 
-Wichtig: alle diese Tools sind **read-only auf den UI-State**. Sie öffnen oder verändern keine Fenster selbst.
+Wichtig: `get_active_item` und `get_selected_items` sind **read-only auf den UI-State**. `open_item_by_id` darf dagegen explizit ein Inspector-Fenster oeffnen.
 
 ### `getActiveItem`
 
@@ -427,6 +427,25 @@ return items;
 - `Selection.Count == 0` → `value: []`, `count: 0`, **kein** Fehler (valide Selection, einfach nichts markiert)
 - Selection im Suchordner oder RSS — wird wie normale Items behandelt (Outlook-eigenes Verhalten, kein Sonderfall)
 - Mixed Selection (technisch nicht möglich im Standard-Explorer, da Folder nur einen Typ führt) — wir werfen keinen Fehler, sondern filtern per `scope`
+
+### `open_item_by_id`
+
+**Beschreibung**: Oeffnet ein Outlook-Item anhand seiner EntryID in einem Inspector-Fenster. Geeignet fuer MailItem und AppointmentItem; die Anzeige erfolgt ueber Outlook `Display(false)`.
+
+**Input**:
+- `id` (string, required) — Outlook EntryID des Items
+
+**Output**:
+```json
+{
+  "opened": true,
+  "id": "00000000...EntryID"
+}
+```
+
+**Errors**:
+- `InvalidInput` — leere oder null EntryID
+- Outlook-/COM-Fehler wenn die EntryID nicht aufloesbar ist oder der Item-Typ nicht angezeigt werden kann
 
 ## Adressbuch-Auflösung (Exchange GAL, COM-only)
 

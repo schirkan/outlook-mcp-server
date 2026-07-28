@@ -8,6 +8,33 @@ namespace OutlookMcpServer.Interop;
 public sealed partial class OutlookInteropAdapter
 {
     /// <summary>
+    /// Oeffnet ein Outlook-Item per EntryID in einem Inspector-Fenster.
+    /// </summary>
+    public async Task<OpenItemResult> OpenItemByIdAsync(
+        string id,
+        CancellationToken cancellationToken = default)
+    {
+        await GetOutlookApplicationAsync(cancellationToken);
+        return await RunComAsync(() =>
+        {
+            dynamic item = GetMapiNamespace().GetItemFromID(id, Type.Missing);
+            try
+            {
+                item.Display(false);
+                return new OpenItemResult
+                {
+                    Opened = true,
+                    Id = id,
+                };
+            }
+            finally
+            {
+                ReleaseComObject(item);
+            }
+        }, nameof(OpenItemByIdAsync));
+    }
+
+    /// <summary>
     /// Holt den aktuell aktiven Inspector und gibt bei COM-Fehlern null zurueck.
     /// </summary>
     private dynamic? TryGetActiveInspector()

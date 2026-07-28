@@ -147,6 +147,14 @@ public sealed class FakeInteropAdapter : IInteropOutlookAdapter
     public Task<IReadOnlyList<MeetingTimeCandidate>> FindMeetingTimesAsync(FindMeetingTimesRequest request, CancellationToken cancellationToken = default)
         => Task.FromResult<IReadOnlyList<MeetingTimeCandidate>>(Array.Empty<MeetingTimeCandidate>());
 
+    public Task<OpenItemResult> OpenItemByIdAsync(
+        string id,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"{nameof(OpenItemByIdAsync)}:id={id}");
+        return Task.FromResult(new OpenItemResult { Opened = true, Id = id });
+    }
+
     // ===== Active-Inspector / Selection =====
 
     public Func<BodyFormat?, CancellationToken, ActiveItem?>? OnGetActiveItem { get; set; }

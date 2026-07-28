@@ -34,6 +34,7 @@ MCP-Server (Model Context Protocol) for accessing a **classic** Outlook installa
 ### Active-Inspector / Selection (COM-only, no Graph equivalent)
 - `get_active_item` — currently open item in Outlook's Inspector (mail or event), null if no inspector or out-of-scope type
 - `get_selected_items` — items selected in Explorer with scope-filter (`mail` / `calendar` / `any`) and top-cap
+- `open_item_by_id` — opens an Outlook item by EntryID in an Inspector window
 
 ## Requirements
 

@@ -118,3 +118,15 @@ public sealed record InternetMessageHeader
     [JsonPropertyName("value")]
     public string Value { get; init; } = string.Empty;
 }
+
+/// <summary>
+/// Ergebnis eines Requests zum Oeffnen eines Outlook-Items.
+/// </summary>
+public sealed record OpenItemResult
+{
+    [JsonPropertyName("opened")]
+    public bool Opened { get; init; }
+
+    [JsonPropertyName("id")]
+    public string Id { get; init; } = string.Empty;
+}

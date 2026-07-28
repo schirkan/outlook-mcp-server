@@ -165,6 +165,13 @@ public interface IInteropOutlookAdapter
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Oeffnet ein Outlook-Item per EntryID in einem Inspector-Fenster.
+    /// </summary>
+    Task<OpenItemResult> OpenItemByIdAsync(
+        string id,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// COM-Mapping fuer <see cref="IOutlookService.GetActiveItemAsync"/>:
     /// <c>Application.ActiveInspector()?.CurrentItem</c> + Type-Dispatch.
     /// bodyFormat=null ⇒ kein Body-Roundtrip fuer den enthaltenen MailItem.

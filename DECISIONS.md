@@ -243,4 +243,42 @@ Vollstaendige Begruendung pro Code-Stelle:
 - [src/OutlookMcpServer.Interop/OutlookInteropAdapter.Common.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.Common.cs) — Shared Helpers (`EnsureOutlookInitialized`, `ReleaseComObject`, etc.).
 - [src/OutlookMcpServer.Interop/OutlookInteropAdapter.Mail.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.Mail.cs) — `ListMailsAsync`, `GetMailAsync`, `GetMailsAsync`, `ListMailsRecursiveAsync`, `SearchMailsAsync`.
 - [src/OutlookMcpServer.Interop/OutlookInteropAdapter.MailMapping.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.MailMapping.cs) — `MapMailItem` + Sub-Helpers (`TryMapMailRecipients`, etc.).
-- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.MailMutations.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.MailMutations.cs) — `SendMailAsync`, `CreateDraftAsync`, `UpdateMailAsync`, `MoveMailAsync`, `CopyMailAsync`, `DeleteMailAsync`, `GetMailHeadersAsync`, `ListAttachmentsAsync`, `GetAttachmentAsync`.
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.MailMutations.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.MailMutations.cs) - `SendMailAsync`, `CreateDraftAsync`, `UpdateMailAsync`, `MoveMailAsync`, `CopyMailAsync`, `DeleteMailAsync`, `GetMailHeadersAsync`, `ListAttachmentsAsync`, `GetAttachmentAsync`.
+
+## 2026-07-28 — `open_item_by_id` UI-Tool (`6edbf78`)
+
+Status: accepted
+
+Kontext: Bisher waren alle Tools in der Active-Inspector/Selection-Sektion (`get_active_item`, `get_selected_items`) **read-only** auf UI-State — sie lesen `Application.ActiveInspector()`, `ActiveExplorer().Selection`, etc., öffnen oder verändern aber keine Fenster selbst. Das ist eine bewusste Design-Entscheidung (Sektion-Einleitung in `specs/API-DESIGN.md`: „Wichtig: alle diese Tools sind read-only auf den UI-State"). Aber ein häufiger Use-Case ist „öffne die Mail mit EntryID X" (nach `list_mails`/`search_mails`) oder „öffne den Termin mit EntryID Y" (nach `list_events`) — das ging bisher nicht via MCP-Tool. Caller mussten manuell in Outlook suchen oder via UI-Automation-Skripts arbeiten.
+
+Entscheidung: Neues MCP-Tool `open_item_by_id(id)` in `ActiveSelectionTools.cs`. Architektur-Muster:
+- **COM-Adapter** (`OutlookInteropAdapter.OpenItemByIdAsync` in `OutlookInteropAdapter.ActiveSelection.cs`): `GetOutlookApplicationAsync()` für Init → `RunComAsync(() => { dynamic item = GetMapiNamespace().GetItemFromID(id, Type.Missing); try { item.Display(false); return new OpenItemResult { Opened = true, Id = id }; } finally { ReleaseComObject(item); } }, nameof(OpenItemByIdAsync))`. Standard-Pattern `GetItemFromID + Item.Display(false) + ReleaseComObject im finally` — robust gegen Inspector-Switches und COM-RCW-Leaks.
+- **Service** (`OutlookService.OpenItemByIdAsync`): Validation `ValidateStringNotEmpty(id, nameof(id))` → delegation an Adapter.
+- **Domain-Model** (`OpenItemResult` in `CommonModels.cs`): `record { bool Opened, string Id }` — JSON-serialisierbar mit `[JsonPropertyName]`.
+- **Tool** (`ActiveSelectionTools.OpenItemById`): `[McpServerTool(Name = "open_item_by_id")]` + `[Description("Oeffnet ein Outlook-Item per EntryID in einem Inspector-Fenster. Geeignet fuer MailItem und AppointmentItem, sofern Outlook den Typ anzeigen kann.")]`.
+- **Section-Einleitung aktualisiert** (in `specs/API-DESIGN.md`): „`get_active_item` und `get_selected_items` sind read-only auf den UI-State. `open_item_by_id` darf dagegen explizit ein Inspector-Fenster öffnen."
+
+Alternativen (verworfen):
+- **COM-`Item.Display(true)` (modal)**: blockiert MCP-Server-Thread bis User das Fenster schließt — unbrauchbar für Server-Use-Case.
+- **Tool in eigenes `UiTools.cs` auslagern statt in `ActiveSelectionTools`**: thematisch verwandt (Inspector-Operationen), aktuelle Co-Location mit `get_active_item`/`get_selected_items` ist semantisch passender.
+- **Tool ohne `Opened`-Flag direkt `void` returnen**: weniger Feedback für Caller; `Opened=false` signalisiert klar „Inspector konnte nicht geöffnet werden".
+
+Konsequenzen:
+- 10 Files, +108/−1.
+- Tool-Count: 27 → **28** (ActiveSelectionTools 2 → 3: `get_active_item`, `get_selected_items`, `open_item_by_id`).
+- Martin hat README.md + specs/API-DESIGN.md direkt im Commit mit-aktualisiert (kein separater Doku-Commit nötig).
+- Erste UI-Mutation in der bisher read-only Sektion — Section-Einleitung präzisiert.
+- Validation greift früh (Service-Layer) → kein unnötiger COM-Round-Trip bei leerer/null ID.
+- `Item.Display(false)` ist nicht-modal: das Inspector-Fenster öffnet sich, der MCP-Call returnt sofort mit `{opened: true, id: "..."}` — Caller kann weitere Tools aufrufen, während das Fenster offen ist.
+
+Vollstaendige Begruendung pro Code-Stelle:
+- [src/OutlookMcpServer/Tools/ActiveSelectionTools.cs](src/OutlookMcpServer/Tools/ActiveSelectionTools.cs) — neues `[McpServerTool(Name = "open_item_by_id")]` mit `OpenItemById(id, ct)` Methode (10 LOC).
+- [src/OutlookMcpServer.Domain/Services/OutlookService.cs](src/OutlookMcpServer.Domain/Services/OutlookService.cs) — `OpenItemByIdAsync(id, ct)` mit `ValidateStringNotEmpty(id, nameof(id))` + Delegation an Adapter.
+- [src/OutlookMcpServer.Domain/Abstractions/IOutlookService.cs](src/OutlookMcpServer.Domain/Abstractions/IOutlookService.cs) — Interface-Method `Task<OpenItemResult> OpenItemByIdAsync(string id, CancellationToken ct)`.
+- [src/OutlookMcpServer.Domain/Abstractions/IInteropOutlookAdapter.cs](src/OutlookMcpServer.Domain/Abstractions/IInteropOutlookAdapter.cs) — gleiche Interface-Method auf Adapter-Layer.
+- [src/OutlookMcpServer.Domain/Models/Common/CommonModels.cs](src/OutlookMcpServer.Domain/Models/Common/CommonModels.cs) — neuer `OpenItemResult { Opened, Id }` Record mit `[JsonPropertyName]` Attributen.
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.ActiveSelection.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.ActiveSelection.cs) — COM-Impl: `GetItemFromID + Item.Display(false) + ReleaseComObject` Pattern, eingebettet in `RunComAsync` für einheitliches Error-Handling.
+- [tests/OutlookMcpServer.Domain.Tests/Fakes/FakeInteropAdapter.cs](tests/OutlookMcpServer.Domain.Tests/Fakes/FakeInteropAdapter.cs) — Fake-Impl mit `_openByIdResults`-Dictionary für Test-Setup.
+- [tests/OutlookMcpServer.Domain.Tests/Fakes/FakeOutlookService.cs](tests/OutlookMcpServer.Domain.Tests/Fakes/FakeOutlookService.cs) — Fake-Impl auf Service-Layer.
+- [README.md](README.md) — neue Zeile in Active-Inspector/Selection-Sektion: „`open_item_by_id` — opens an Outlook item by EntryID in an Inspector window".
+- [specs/API-DESIGN.md](specs/API-DESIGN.md) — neue Sektion `### open_item_by_id` mit Input/Output/Errors-Block; Section-Einleitung präzisiert (read-only-Klausel auf die anderen beiden Tools eingeschränkt).

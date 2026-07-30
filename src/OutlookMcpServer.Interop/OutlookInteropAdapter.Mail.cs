@@ -17,33 +17,117 @@ public sealed partial class OutlookInteropAdapter
         return await RunComAsync(() =>
         {
             var result = new List<MailFolder>();
-            dynamic parent = parentFolderId is null
-                ? GetMapiNamespace()
-                : GetMapiNamespace().GetFolderFromID(parentFolderId, Type.Missing);
-            try
+            dynamic ns = GetMapiNamespace();
+
+            // Liste der WellKnown-DefaultFolder-COM-Referenzen, die wir zum
+            // Vergleich brauchen, um WellKnownName zu setzen.
+            var wellKnownByEntryId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (wkName, olId) in OlEnumMappings.KnownFolderMappings)
             {
-                foreach (var item in parent.Folders)
+                try
                 {
-                    dynamic folder = item;
-                    try
+                    dynamic wkFolder = ns.GetDefaultFolder(olId);
+                    string wkEntryId = (string)wkFolder.EntryID;
+                    if (!string.IsNullOrEmpty(wkEntryId))
                     {
-                        var name = (string)folder.Name;
-                        if (!includeHidden && OlEnumMappings.IsOutlookHiddenFolderName(name))
-                        {
-                            continue;
-                        }
-                        result.Add(MapMailFolder(folder, parentFolderId));
+                        wellKnownByEntryId[wkEntryId] = wkName;
                     }
-                    finally
-                    {
-                        ReleaseComObject(folder);
-                    }
+                    Marshal.ReleaseComObject(wkFolder);
+                }
+                catch (COMException ex)
+                {
+                    _logger.LogDebug(ex,
+                        "ListMailFolders: WellKnownFolder '{Name}' (olId={OlId}) nicht aufloesbar",
+                        wkName, olId);
                 }
             }
-            finally
+
+            // Outlook-Semantik: ns.Folders enthaelt die Postfaecher/Stores
+            // (z. B. "Martin.Pietschmann@itergo.com"). Ein Aufrufer ohne
+            // parentFolderId will die *sichtbaren Mailordner* sehen — daher
+            // iterieren wir bei parentFolderId==null ueber alle Postfaecher
+            // und geben deren direkte Kinder (Posteingang, Gesendete Elemente,
+            // ...) zurueck. Damit verhaelt sich der Service wie Outlook-UI.
+            if (parentFolderId is null)
             {
-                ReleaseComObject(parentFolderId is not null ? parent : null);
+                dynamic topFolders = ns.Folders;
+                try
+                {
+                    foreach (var storeRoot in topFolders)
+                    {
+                        dynamic? storeKids = null;
+                        try
+                        {
+                            try { storeKids = storeRoot.Folders; }
+                            catch (COMException ex)
+                            {
+                                _logger.LogWarning(ex,
+                                    "ListMailFolders: Postfach '{Name}' hat keine Folders",
+                                    (string)storeRoot.Name);
+                                continue;
+                            }
+                            foreach (var folder in storeKids)
+                            {
+                                try
+                                {
+                                    var name = (string)folder.Name;
+                                    if (!includeHidden && OlEnumMappings.IsOutlookHiddenFolderName(name))
+                                    {
+                                        continue;
+                                    }
+                                    string entryId = (string)folder.EntryID;
+                                    string? wellKnown = wellKnownByEntryId.TryGetValue(entryId, out var wk) ? wk : null;
+                                    result.Add(MapMailFolder(folder, null, wellKnown));
+                                }
+                                finally
+                                {
+                                    Marshal.ReleaseComObject(folder);
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            if (storeKids is not null) Marshal.ReleaseComObject(storeKids);
+                            Marshal.ReleaseComObject(storeRoot);
+                        }
+                    }
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(topFolders);
+                }
             }
+            else
+            {
+                dynamic parent = ns.GetFolderFromID(parentFolderId, Type.Missing);
+                try
+                {
+                    foreach (var item in parent.Folders)
+                    {
+                        dynamic folder = item;
+                        try
+                        {
+                            var name = (string)folder.Name;
+                            if (!includeHidden && OlEnumMappings.IsOutlookHiddenFolderName(name))
+                            {
+                                continue;
+                            }
+                            string entryId = (string)folder.EntryID;
+                            string? wellKnown = wellKnownByEntryId.TryGetValue(entryId, out var wk) ? wk : null;
+                            result.Add(MapMailFolder(folder, parentFolderId, wellKnown));
+                        }
+                        finally
+                        {
+                            Marshal.ReleaseComObject(folder);
+                        }
+                    }
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(parent);
+                }
+            }
+
             return new PagedResult<MailFolder>
             {
                 Value = result,
@@ -67,9 +151,13 @@ public sealed partial class OutlookInteropAdapter
                     "junkEmail, archive, outbox) wird in Multi-Store-Profilen " +
                     "unter allen Stores gesucht — falls keiner passt, ist der " +
                     "Folder im aktiven Profil nicht vorhanden.");
+            // WellKnownName nur setzen, wenn der Caller einen Well-Known-Namen
+            // verwendet hat (sonst wurde per EntryID aufgeloest, und wir koennen
+            // den Folder-Charakter nicht ohne Lookup bestimmen).
+            string? wellKnown = WellKnownFolder.IsKnownMailFolder(folderId) ? folderId : null;
             try
             {
-                return MapMailFolder(folder, null);
+                return MapMailFolder(folder, null, wellKnown);
             }
             finally
             {

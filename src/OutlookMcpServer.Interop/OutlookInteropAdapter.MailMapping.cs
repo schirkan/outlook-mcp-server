@@ -18,7 +18,14 @@ public sealed partial class OutlookInteropAdapter
     /// <summary>
     /// Mappt einen Outlook-Mailordner auf das Domain-DTO.
     /// </summary>
-    private static MailFolder MapMailFolder(dynamic folder, string? parentId)
+    /// <param name="folder">Outlook-MAPIFolder-COM-Referenz.</param>
+    /// <param name="parentId">Bekannte Parent-EntryID oder null (dann wird folder.Parent ausgelesen).</param>
+    /// <param name="wellKnownName">
+    /// Optionaler Well-Known-Name, falls der Folder einem der Standard-Ordner
+    /// (Inbox/Drafts/SentItems/...) entspricht. Wird vom Caller gesetzt, wenn
+    /// die EntryID mit einem GetDefaultFolder()-Treffer uebereinstimmt.
+    /// </param>
+    private static MailFolder MapMailFolder(dynamic folder, string? parentId, string? wellKnownName = null)
     {
         var entryId = (string)folder.EntryID;
         var name = (string)folder.Name;
@@ -48,7 +55,7 @@ public sealed partial class OutlookInteropAdapter
         {
             Id = entryId,
             DisplayName = name,
-            WellKnownName = null,
+            WellKnownName = wellKnownName,
             ParentFolderId = actualParentId,
             ChildFolderCount = childCount,
             TotalItemCount = totalCount,

@@ -101,19 +101,40 @@ internal static class OlEnumMappings
     };
 
     // ----- OlDefaultFolders -----
-    // 5=olFolderDeletedItems, 6=olFolderOutbox, 9=olFolderCalendar, 10=olFolderContacts,
-    // 11=olFolderDrafts, 12=olFolderInbox, 16=olFolderJunk, 18=olFolderSentMail,
-    // 23=olFolderArchive
+    // Werte gemaess Microsoft Learn / Outlook-PIA (Microsoft.Office.Interop.Outlook.OlDefaultFolders).
+    // 3=olFolderDeletedItems, 4=olFolderOutbox, 5=olFolderSentMail, 6=olFolderInbox,
+    // 9=olFolderCalendar, 10=olFolderContacts, 16=olFolderDrafts, 23=olFolderJunk.
+    // Archive ist KEIN offizieller OlDefaultFolders-Wert; Outlook stellt keinen
+    // globalen "Archive"-Default zur Verfuegung. Wir lassen Archive daher weg
+    // und nutzen dafuer im Service den expliziten Pfad ueber store.GetDefaultFolder
+    // oder einen Konfigurationswert. Der hier vergebene olFolderId-Wert 23 ist
+    // NICHT Archive, sondern olFolderJunk — der bleibt fuer JunkEmail.
     public static int? ToOlDefaultFolder(string wellKnownName) => wellKnownName switch
     {
-        WellKnownFolder.Inbox => 12,
-        WellKnownFolder.Drafts => 11,
-        WellKnownFolder.SentItems => 18,
-        WellKnownFolder.DeletedItems => 5,
-        WellKnownFolder.JunkEmail => 16,
-        WellKnownFolder.Archive => 23,
-        WellKnownFolder.Outbox => 6,
+        WellKnownFolder.Inbox => 6,
+        WellKnownFolder.SentItems => 5,
+        WellKnownFolder.Outbox => 4,
+        WellKnownFolder.DeletedItems => 3,
+        WellKnownFolder.JunkEmail => 23,
+        WellKnownFolder.Drafts => 16,
+        // Archive hat keine offizielle OlDefaultFolder-Konstante. Caller muessen
+        // einen expliziten Store-/Folder-Pfad verwenden.
+        WellKnownFolder.Archive => null,
         _ => null,
+    };
+
+    /// <summary>
+    /// Liefert alle bekannten WellKnownFolder-Namen mit ihrer Outlook-olFolderId,
+    /// soweit eine offizielle Konstante existiert. Archive fehlt absichtlich.
+    /// </summary>
+    public static readonly IReadOnlyList<(string Name, int OlFolderId)> KnownFolderMappings = new[]
+    {
+        (WellKnownFolder.Inbox, 6),
+        (WellKnownFolder.SentItems, 5),
+        (WellKnownFolder.Outbox, 4),
+        (WellKnownFolder.DeletedItems, 3),
+        (WellKnownFolder.JunkEmail, 23),
+        (WellKnownFolder.Drafts, 16),
     };
 
     // ----- Folder Visibility -----

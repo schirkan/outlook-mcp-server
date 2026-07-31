@@ -7,7 +7,7 @@ MCP-Server (Model Context Protocol) for accessing a **classic** Outlook installa
 ## Features (v1)
 
 ### Mail (read)
-- `list_mail_folders` / `get_mail_folder` — list + retrieve folders incl. well-known names (`inbox`, `drafts`, `sentItems`, `deletedItems`, `junkEmail`, `archive`, `outbox`)
+- `list_mail_folders` / `get_mail_folder` - list + retrieve folders incl. well-known names (`inbox`, `drafts`, `sentItems`, `deletedItems`, `junkEmail`, `outbox`); `wellKnownName` is populated in returned folder objects for caller-friendly lookups. **Note**: `archive` is not an official Outlook default folder and requires an explicit folder EntryID.
 - `list_mails` / `get_mail` / `get_mails` (bulk) / `search_mails` / `list_mails_recursive` — list/get/search mails with body, headers, attachments; bulk-get reads up to 50 EntryIDs in one call (returns `{ value, notFoundIds }`); recursive variant walks folder hierarchy with property-filter support (e.g. `[Unread]=true`). **`get_mail`/`get_mails`** haben einen `bodyFormat`-Parameter (`markdown`/`text`/`html`, Default `null` = kein Body); **`list_mails`/`list_mails_recursive`/`search_mails`** liefern keinen Body (Header-only Listen-Calls — spart Tokens + Performance). Mail-Body wird on-the-fly aus Outlook-HTML via `HtmlBodyConverter` (ReverseMarkdown-basiert) konvertiert.
 - `get_mail_headers` — internet headers (From/To headers, DKIM, routing)
 - `list_attachments` / `get_attachment` — attachment summary + Base64-encoded content

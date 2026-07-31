@@ -8,7 +8,7 @@ Tool-Eingaben sind JSON-Objekte; Tool-Ausgaben sind JSON-Objekte. Datums-/Zeit-W
 
 ### `listMailFolders`
 
-**Beschreibung**: Listet alle Mail-Ordner im Standard-Postfach auf (Inbox, Drafts, SentItems, DeletedItems + Custom-Ordner).
+**Beschreibung**: Listet alle sichtbaren Mail-Ordner in den Postfächern/Stores des Profils auf (Top-Level: Inbox, Drafts, SentItems, DeletedItems + Custom-Ordner pro Postfach). Bei `parentFolderId=null` werden `storeRoot.Folders` aller Postfächer iteriert (nicht `ns.Folders` — das wäre die Postfach-Liste selbst). `wellKnownName` wird per EntryID-Abgleich gegen `Namespace.GetDefaultFolder()` befüllt — zuverlässig und locale-unabhängig (Outlook-Sprachvarianten werden ignoriert).
 
 **Input**:
 - `parentFolderId` (optional, string): EntryID eines Parent-Ordners. Default = Root.
@@ -41,7 +41,7 @@ Tool-Eingaben sind JSON-Objekte; Tool-Ausgaben sind JSON-Objekte. Datums-/Zeit-W
 **Beschreibung**: Listet Mails in einem Ordner. Sortierung: neueste zuerst (ReceivedTime desc).
 
 **Input**:
-- `folderId` (string, required) — oder well-known name (`inbox`, `drafts`, `sentItems`, `deletedItems`, `junkEmail`, `archive`, `outbox`)
+- `folderId` (string, required) — Outlook EntryID oder well-known name (`inbox`, `drafts`, `sentItems`, `deletedItems`, `junkEmail`, `outbox`). **Archive hat kein offizielles `OlDefaultFolder`-Konstante** in Outlook; für Archive muss ein expliziter Folder-Pfad (EntryID) verwendet werden.
 - `top` (int, default 25, max 100)
 - `skip` (int, default 0)
 - `filter` (optional, string): Outlook-DASL-Filter (z. B. `"@SQL=urn:schemas:httpmail:subject LIKE '%urgent%'"`)

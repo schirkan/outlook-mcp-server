@@ -282,3 +282,46 @@ Vollstaendige Begruendung pro Code-Stelle:
 - [tests/OutlookMcpServer.Domain.Tests/Fakes/FakeOutlookService.cs](tests/OutlookMcpServer.Domain.Tests/Fakes/FakeOutlookService.cs) — Fake-Impl auf Service-Layer.
 - [README.md](README.md) — neue Zeile in Active-Inspector/Selection-Sektion: „`open_item_by_id` — opens an Outlook item by EntryID in an Inspector window".
 - [specs/API-DESIGN.md](specs/API-DESIGN.md) — neue Sektion `### open_item_by_id` mit Input/Output/Errors-Block; Section-Einleitung präzisiert (read-only-Klausel auf die anderen beiden Tools eingeschränkt).
+
+## 2026-07-31 — OlDefaultFolder-IDs-Korrektur + WellKnownName-Population (`5254f19`)
+
+Status: accepted (von Martin approviert, Author GitHub Copilot)
+
+Kontext: Beim ersten lokalen Smoke-Test mit echtem Outlook-Profil (Outlook 2016 + Exchange-Mailbox) fiel auf, dass `ListMailFolders_ReturnsAtLeastInbox` und `GetMailFolder_Inbox_ReturnsValidFolder` rot waren. Die Service-Code-Pfade waren korrekt, aber die Folder-Resolution lieferte konsistent falsche oder leere Results. Ursache: `OlEnumMappings.ToOlDefaultFolder(string wellKnownName)` lieferte für jeden Well-Known-Namen die falsche `olFolderId`. Verifikation gegen Microsoft Learn / Outlook-PIA (`Microsoft.Office.Interop.Outlook.OlDefaultFolders`-Enum) zeigte: die ursprünglichen Mapping-Werte waren Copy-Paste-Error — kein Outlook-Versions-Drift (die Werte sind seit Outlook 2010 stabil). Konkret falsch: `Inbox 12 → 6`, `SentItems 18 → 5`, `Outbox 6 → 4`, `DeletedItems 5 → 3`, `JunkEmail 16 → 23`, `Drafts 11 → 16`. Plus: `Archive` hat gar keine offizielle `OlDefaultFolders`-Konstante (Outlook stellt keinen globalen Archive-Default bereit) — der ursprüngliche Wert 23 war in Wirklichkeit `olFolderJunk`.
+
+Zusätzliche Folgeprobleme:
+1. `ListMailFoldersAsync` iterierte `ns.Folders` (Postfächer/Stores selbst, nicht die sichtbaren Mail-Ordner). In Exchange-Profilen lieferte das eine Liste von Postfach-Namen wie `"Martin.Pietschmann@itergo.com"` ohne sichtbare Mail-Ordner — komplett falsche Semantik für einen Caller der „alle Mail-Ordner" will.
+2. `MapMailFolder` setzte `WellKnownName` immer auf `null`, sodass Caller Folder nur per `displayName` (lokalisierungsabhängig!) oder `id` identifizieren konnten — fragil gegen Outlook-Sprachvarianten.
+3. `GetMailFolderAsync` setzte `WellKnownName` auch nicht, wenn der Caller einen Well-Known-Namen statt EntryID übergab.
+
+Entscheidung:
+- **OlDefaultFolder-IDs korrigiert** in `OlEnumMappings.ToOlDefaultFolder` (siehe Mapping-Tabelle oben).
+- **`Archive` aus dem Mapping entfernt** (`null` zurückgeben). Caller müssen expliziten Folder-Pfad verwenden — dokumentiert in README.md und specs/API-DESIGN.md (Hinweis-Box).
+- **Neue `KnownFolderMappings`-Liste** in `OlEnumMappings` (`IReadOnlyList<(string Name, int OlFolderId)>`) für Service-/Adapter-Iteration. Quelle-of-Truth für `ListMailFoldersAsync`-Vergleich.
+- **`ListMailFoldersAsync` umstrukturiert**: sammelt vorab WellKnown-COM-Referenzen via `Namespace.GetDefaultFolder(olId)`, baut `Dictionary<string, string>` (EntryID → WellKnownName, `OrdinalIgnoreCase`), iteriert dann `ns.Folders` (Postfächer) → pro Store `storeRoot.Folders` (sichtbare Mail-Ordner). Jeder gefundene Folder wird per `Dictionary.TryGetValue` mit WellKnownName befüllt. COMException pro WellKnown-Lookup wird mit `LogDebug` toleriert (nicht alle Profile haben jeden WellKnown-Folder — z. B. Exchange-Cached-Mode ohne Junk).
+- **`MapMailFolder` erweitert**: optionaler `wellKnownName`-Parameter (`null` Default), wird im DTO gesetzt. Callers müssen beim Aufruf den WellKnownName mitgeben.
+- **`GetMailFolderAsync` erweitert**: `wellKnown = WellKnownFolder.IsKnownMailFolder(folderId) ? folderId : null` — wenn Caller einen Well-Known-Namen übergibt, wird `WellKnownName` direkt gesetzt; bei EntryID-Übergabe bleibt es `null` (Lookup wäre zu teuer für Single-Folder-Calls).
+- **Integration-Tests grün**: `ListMailFolders_ReturnsAtLeastInbox`, `GetMailFolder_Inbox_ReturnsValidFolder` (Outlook 2016 + Exchange). Full Test-Suite jetzt **69/69 passing** (63 domain + 6 integration).
+
+Alternativen (verworfen):
+- **Mapping-Werte aus anderer Quelle beziehen** (z. B. NuGet-Package, externe Lib): keine zuverlässige, gewartete Quelle gefunden; Werte direkt im Code mit Microsoft-Learn-Verifikation ist transparenter.
+- **Cache der WellKnown-COM-Referenzen** über mehrere Calls hinweg: würde Init-Logik komplexer machen, ohne messbaren Performance-Vorteil (Outlook-Cache ist schnell genug für typische Call-Frequenz).
+- **`WellKnownName` per DisplayName-Vergleich setzen** (z. B. `"Inbox"` → `"inbox"`): sprachabhängig — `"Inbox"` heißt auf deutschem Outlook `"Posteingang"`, französisch `"Boîte de réception"`. EntryID-Vergleich ist die einzige locale-unabhängige Methode.
+
+Konsequenzen:
+- 3 Files, +146/−30.
+- **Keine API-Changes** — alle Signaturen bleiben gleich (Tool-Surface unverändert).
+- **Verhaltensänderungen ohne API-Change**:
+  - `list_mail_folders` (ohne `parentFolderId`) liefert jetzt sichtbare Top-Level-Mailordner aller Postfächer (`Inbox`, `Drafts`, ...) — vorher lieferte es eine Liste von Postfächern.
+  - `list_mail_folders`/`get_mail_folder`: `WellKnownName` ist jetzt zuverlässig befüllt (vorher immer `null`).
+  - `list_mails`/`get_mail_folder` mit `folderId="archive"`: liefert jetzt einen Fehler statt falschen Folder (kein offizielles OlDefaultFolder für Archive). Caller müssen expliziten Folder-Pfad verwenden.
+- **Integration-Tests grün** — erster automatisierter End-to-End-Beweis dass das Toolset gegen echtes Outlook funktioniert. Karte 7 Acceptance nähert sich (`lokal grün` durch automatisierte Integration-Tests bestätigt; Martin's manuelle Verifikation steht weiterhin aus).
+- Author = **GitHub Copilot** (von Martin approviert); Commit-Message dokumentiert Microsoft-Learn-Verifikation explizit.
+- Tool-Count bleibt **28** (keine neuen Tools).
+- Pattern `GetItemFromID` + EntryID-Match für locale-unabhängige Identifikation ist auch für andere Outlook-Entities anwendbar (Categories, Views, Stores).
+
+Vollstaendige Begruendung pro Code-Stelle:
+- [src/OutlookMcpServer.Interop/EnumMappings.cs](src/OutlookMcpServer.Interop/EnumMappings.cs) — `ToOlDefaultFolder` korrigiert (6 Mapping-Werte), `Archive => null`, neue `KnownFolderMappings`-Liste als `IReadOnlyList<(string Name, int OlFolderId)>`, Inline-Kommentar mit Microsoft-Learn-Referenz.
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.Mail.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.Mail.cs) — `ListMailFoldersAsync` komplett umstrukturiert: pre-collection der WellKnown-COM-Referenzen mit COMException-Toleranz, Iteration über `storeRoot.Folders` pro Postfach, `wellKnownByEntryId.TryGetValue` für `WellKnownName`-Population. `GetMailFolderAsync` setzt `wellKnown` wenn Caller Well-Known-Namen übergibt.
+- [src/OutlookMcpServer.Interop/OutlookInteropAdapter.MailMapping.cs](src/OutlookMcpServer.Interop/OutlookInteropAdapter.MailMapping.cs) — `MapMailFolder` bekommt optionalen `wellKnownName`-Parameter (Default `null`), DTO-`WellKnownName` wird aus diesem Parameter gesetzt statt hardcoded `null`.
+- [tests/OutlookMcpServer.IntegrationTests/MailFolderIntegrationTests.cs](tests/OutlookMcpServer.IntegrationTests/MailFolderIntegrationTests.cs) — `ListMailFolders_ReturnsAtLeastInbox`, `GetMailFolder_Inbox_ReturnsValidFolder` jetzt grün (Outlook 2016 + Exchange); Full Test-Suite 69/69 passing (laut Commit-Message, ohne Diff-Beleg — Integration-Tests wurden evtl. in einer vorherigen Session angepasst).

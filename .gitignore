@@ -82,3 +82,6 @@ appsettings.Development.json
 # Outlook Interop artifacts
 _Interop*.log
 *.olo
+
+# CodeGraph
+.codegraph/

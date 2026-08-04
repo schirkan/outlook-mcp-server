@@ -1,4 +1,4 @@
-﻿# Outlook MCP Server
+# Outlook MCP Server
 
 MCP-Server (Model Context Protocol) fuer den Zugriff auf eine lokale **klassische** Outlook-Installation (Microsoft Outlook fuer Windows, klassischer Desktop-Client - kein Microsoft 365 Cloud, kein Graph API, kein "New Outlook").
 
@@ -206,7 +206,7 @@ Dreizehn Commits von Martin zwischen den letzten Pushes aus älteren Sessions au
 ## Project Files
 
 - `README.md` - Landing Page (kurzer Ueberblick, Links)
-- `PROJECT.md` - diese Datei (Status, Constraints, Architektur-Uebersicht)
+- `AGENTS.md` - diese Datei (Status, Constraints, Architektur-Uebersicht)
 - `specs/VISION.md` - Vision, Scope, Ziele/Nicht-Ziele (Detail)
 - `specs/ARCHITECTURE.md` - Schichten, Komponenten, Datenfluesse
 - `specs/API-DESIGN.md` - MCP-Tools & Resources fuer Mail + Kalender

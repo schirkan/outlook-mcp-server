@@ -75,10 +75,16 @@ A `minimal.pubxml` profile is shipped that produces a single-file, self-containe
 ```bash
 dotnet publish src/OutlookMcpServer/OutlookMcpServer.csproj \
   -c Release -r win-x64 \
-  -p:PublishProfile=src/OutlookMcpServer/Properties/PublishProfiles/minimal.pubxml
+  -p:PublishProfile=minimal
 ```
 
 Output: `src/OutlookMcpServer/bin/Release/net8.0-windows/win-x64/publish/OutlookMcpServer.exe` (self-contained; no separate .NET runtime install needed). Trimming is disabled to preserve COM activation. Globalization is enabled so calendar operations can handle named time zones and Outlook’s locale-specific dates.
+
+### GitHub releases
+
+The [Release workflow](.github/workflows/release.yml) builds only for newly pushed stable version tags (`vMAJOR.MINOR.PATCH`). Branch pushes and pull requests do not publish releases. The workflow runs the tests without Outlook, embeds the tag version in the Windows-x64 executable, and publishes `outlook-mcp-server.zip` containing `OutlookMcpServer.exe` and `appsettings.json`. The release notes include the ZIP’s SHA-256 checksum.
+
+[Release `v0.1.0`](https://github.com/schirkan/outlook-mcp-server/releases/tag/v0.1.0) is already published. For subsequent releases, create and push a new tag; do not move an existing tag. See [the release procedure](specs/ci-cd-pipeline.md).
 
 ## Configuration
 

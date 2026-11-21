@@ -5,6 +5,8 @@ den Zielort und passe Pfade / Profile-Namen an.
 
 ## MCP-Client-Configs
 
+Der MCP-Client startet den Server lokal über stdio. Eine Transporteinstellung ist nicht nötig.
+
 | Datei | Zielort | Client |
 |---|---|---|
 | `claude-desktop-config.json` | `%APPDATA%\Claude\claude_desktop_config.json` | Claude Desktop |
@@ -12,7 +14,7 @@ den Zielort und passe Pfade / Profile-Namen an.
 
 Pfad-Anpassung: `C:\\Program Files\\Outlook MCP Server\\OutlookMcpServer.exe` →
 tatsaechlicher Installationsort. Bei Publish via `minimal.pubxml` ist die Binary
-self-contained, ~17,7 MB, kein .NET-Install auf Zielmaschine noetig.
+self-contained; keine separate .NET-Installation notwendig.
 
 Cline `autoApprove`-Liste enthaelt nur Read-Tools (`list_*`, `get_*`, `search_*`,
 `find_meeting_times`). Write-Tools (`send_mail`, `create_draft`, `update_*`,
@@ -22,30 +24,18 @@ sind NICHT in autoApprove → Cline fragt bei jedem Call explizit nach.
 
 ## OutlookMcpServer-Configs (appsettings.json-Varianten)
 
-Diese Dateien ersetzen die mit der Binary ausgelieferte `appsettings.json` und
-werden via `OUTLOOKMCPSERVER_*`-Env-Vars oder CLI-Args ueberschrieben (siehe
-README.md § Configuration).
+Kopiere die gewählte Datei als `appsettings.json` neben die ausführbare Datei.
+CLI-Argumente haben Vorrang vor `OUTLOOKMCPSERVER__…`-Umgebungsvariablen, diese
+vor `appsettings.json` (siehe [Configuration](../README.md#configuration)).
 
 | Datei | Zweck |
 |---|---|
-| `appsettings.http.json` | Transport=HTTP/SSE loopback (127.0.0.1:51204), alle Allow*-Flags aktiv |
 | `appsettings.readonly.json` | Read-only-Betrieb: `AllowSend`/`AllowDelete`/`AllowCreate` = false. Empfohlen fuer geteilte oder produktive Setups, in denen nur Lese-Zugriff benoetigt wird |
 
-## Schnelltest (HTTP/SSE)
-
-Nach `OutlookMcpServer.exe --config appsettings.http.json`:
-
-```bash
-# MCP initialize
-curl -X POST http://127.0.0.1:51204/mcp -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}'
-```
-
-Erwartete Antwort: JSON-RPC-Response mit `serverInfo.name="OutlookMcpServer"`,
-`capabilities.tools={}`. Bei `OutlookNotRunning` Fehler: `Outlook.exe` starten
-oder `AutoStartOutlook=true` setzen + 30s warten.
-
 ## Verifikation
+
+Starte den MCP-Client mit der gewählten Config neu und prüfe, ob er die Tools
+unter `outlook` anzeigt. Das Auflisten der Tools benötigt kein Outlook-Profil.
 
 ```powershell
 # Claude Desktop: MCP-Settings editieren, Claude neu starten, "list_mail_folders" testen

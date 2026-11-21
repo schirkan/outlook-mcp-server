@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+using OutlookMcpServer.Domain.Exceptions;
 using OutlookMcpServer.Domain.Models.Calendar;
 using OutlookMcpServer.Domain.Models.Common;
 
@@ -10,30 +10,37 @@ public sealed partial class OutlookInteropAdapter
         CreateEventRequest request,
         CancellationToken cancellationToken = default)
     {
+        ValidateAppointmentBody(request.Body);
+        var window = GetCalendarWindow(request.Start, request.End);
         await GetOutlookApplicationAsync(cancellationToken);
         return await RunComAsync(() =>
         {
             dynamic calendar = GetMapiNamespace().GetDefaultFolder(9);
-            dynamic appointment = calendar.Items.Add(1);
+            dynamic? items = null;
+            dynamic? appointment = null;
             try
             {
-                FillAppointmentFromCreateRequest(appointment, request);
-                AddAttendees(appointment, request.Attendees);
+                items = calendar.Items;
+                appointment = items.Add(1); // olAppointmentItem
+                RequireAppointment((object?)appointment);
+                FillAppointmentFromCreateRequest(appointment, request, window.Start, window.End);
+                if (request.Attendees.Count > 0)
+                {
+                    appointment.MeetingStatus = OlMeeting;
+                    ReplaceAttendees((object)appointment, request.Attendees);
+                }
 
+                // EntryID is only guaranteed after Save; Send may invalidate the Outlook item reference.
+                appointment.Save();
+                string id = (string)appointment.EntryID;
                 if (request.SendInvitations && request.Attendees.Count > 0)
-                {
                     appointment.Send();
-                }
-                else
-                {
-                    appointment.Save();
-                }
-
-                return (string)appointment.EntryID;
+                return id;
             }
             finally
             {
                 ReleaseComObject(appointment);
+                ReleaseComObject(items);
                 ReleaseComObject(calendar);
             }
         }, nameof(CreateEventAsync));
@@ -44,27 +51,33 @@ public sealed partial class OutlookInteropAdapter
         EventUpdate update,
         CancellationToken cancellationToken = default)
     {
+        ValidateAppointmentBody(update.Body);
+        DateTime? startUtc = update.Start is null ? null : ToCalendarUtc(update.Start);
+        DateTime? endUtc = update.End is null ? null : ToCalendarUtc(update.End);
         await GetOutlookApplicationAsync(cancellationToken);
         await RunComAsync(() =>
         {
             dynamic appointment = GetMapiNamespace().GetItemFromID(id, Type.Missing);
             try
             {
-                if (update.Body is { } body)
+                RequireAppointment((object?)appointment);
+                var status = (int)appointment.MeetingStatus;
+                var willSend = update.SendUpdate && (update.Attendees?.Count ?? CountAppointmentAttendees((object)appointment)) > 0;
+                if ((willSend || update.Attendees is not null) && status is not (OlMeeting or OlNonMeeting))
+                    throw new OutlookServiceException(ErrorCode.InvalidInput, "Nur der Organisator eines aktiven Meetings kann Teilnehmer aendern oder Updates senden.");
+                if (update.SendUpdate && update.Attendees is { Count: 0 } && status == OlMeeting)
+                    throw new OutlookServiceException(ErrorCode.InvalidInput, "Outlook kann kein Meeting-Update ohne Teilnehmer senden.");
+
+                if (startUtc.HasValue || endUtc.HasValue)
                 {
-                    var bodyFormat = OlEnumMappings.ToOlBodyFormat(body.ContentType);
-                    appointment.BodyFormat = bodyFormat;
-                    if (bodyFormat == 2)
-                        appointment.HTMLBody = body.Content;
-                    else
-                        appointment.Body = body.Content;
+                    SetAppointmentWindow((object)appointment,
+                        startUtc ?? (DateTime)appointment.StartUTC,
+                        endUtc ?? (DateTime)appointment.EndUTC);
                 }
+                if (update.Body is { } body)
+                    appointment.Body = body.Content;
                 if (update.Subject is { } subject)
                     appointment.Subject = subject;
-                if (update.Start is { } start)
-                    appointment.Start = DateTime.Parse(start.DateTime, System.Globalization.CultureInfo.InvariantCulture);
-                if (update.End is { } end)
-                    appointment.End = DateTime.Parse(end.DateTime, System.Globalization.CultureInfo.InvariantCulture);
                 if (update.Location is { } location)
                     appointment.Location = location;
                 if (update.ReminderMinutesBeforeStart is int rem)
@@ -80,26 +93,17 @@ public sealed partial class OutlookInteropAdapter
                     appointment.Importance = OlEnumMappings.ToOlImportance(importance);
                 if (update.Sensitivity is { } sensitivity)
                     appointment.Sensitivity = OlEnumMappings.ToOlSensitivity(sensitivity);
-                if (update.Attendees is not null)
+                if (update.Attendees is { } attendees)
                 {
-                    dynamic recipients = appointment.Recipients;
-                    try
-                    {
-                        while ((int)recipients.Count > 0)
-                        {
-                            ReleaseComObject(recipients.Item(1));
-                            recipients.Remove(1);
-                        }
-                    }
-                    finally
-                    {
-                        ReleaseComObject(recipients);
-                    }
-                    AddAttendees(appointment, update.Attendees);
+                    if (attendees.Count > 0 && status == OlNonMeeting)
+                        appointment.MeetingStatus = OlMeeting;
+                    ReplaceAttendees((object)appointment, attendees);
                 }
 
-                if (update.SendUpdate && (int)appointment.Recipients.Count > 0)
+                if (willSend)
                 {
+                    if ((int)appointment.MeetingStatus == OlNonMeeting)
+                        appointment.MeetingStatus = OlMeeting;
                     appointment.Send();
                 }
                 else
@@ -126,7 +130,7 @@ public sealed partial class OutlookInteropAdapter
             dynamic appointment = GetMapiNamespace().GetItemFromID(id, Type.Missing);
             try
             {
-                appointment.Delete();
+                DeleteAppointment((object?)appointment, sendCancellation);
                 return true;
             }
             finally
@@ -134,6 +138,21 @@ public sealed partial class OutlookInteropAdapter
                 ReleaseComObject(appointment);
             }
         }, nameof(DeleteEventAsync));
+    }
+
+    internal static void DeleteAppointment(object? item, bool sendCancellation)
+    {
+        RequireAppointment(item);
+        dynamic appointment = item!;
+        var status = (int)appointment.MeetingStatus;
+        if (status is not (OlNonMeeting or OlMeetingReceived or OlMeetingCanceled or OlMeetingReceivedAndCanceled))
+        {
+            // AppointmentItem.Delete has no cancellation control, and OOM exposes no CancelMeeting method.
+            throw new OutlookServiceException(ErrorCode.InvalidInput, sendCancellation
+                ? "Outlook COM kann keine Meeting-Absage senden. Bitte das Meeting in Outlook absagen."
+                : "Outlook COM garantiert keine stille Loeschung eines eigenen Meetings. Bitte Outlook verwenden.");
+        }
+        appointment.Delete();
     }
 
     public async Task RespondToEventAsync(
@@ -147,9 +166,7 @@ public sealed partial class OutlookInteropAdapter
             dynamic appointment = GetMapiNamespace().GetItemFromID(id, Type.Missing);
             try
             {
-                var olResponse = OlEnumMappings.ToOlResponseStatus(request.Response);
-                bool hasComment = !string.IsNullOrEmpty(request.Comment);
-                appointment.Respond(olResponse, hasComment, request.Comment ?? string.Empty);
+                SendAppointmentResponse((object?)appointment, request);
                 return true;
             }
             finally
@@ -159,109 +176,99 @@ public sealed partial class OutlookInteropAdapter
         }, nameof(RespondToEventAsync));
     }
 
+    internal static void SendAppointmentResponse(object? item, RespondToEventRequest request)
+    {
+        RequireAppointment(item);
+        dynamic appointment = item!;
+        if ((int)appointment.MeetingStatus != OlMeetingReceived)
+            throw new OutlookServiceException(ErrorCode.InvalidInput, "Nur auf eine aktive empfangene Einladung kann geantwortet werden.");
+        var responseClass = request.Response switch
+        {
+            Response.Accepted => 56,            // olMeetingResponsePositive
+            Response.TentativelyAccepted => 57, // olMeetingResponseTentative
+            Response.Declined => 55,            // olMeetingResponseNegative
+            _ => throw new OutlookServiceException(ErrorCode.InvalidInput, "Nur Zusage, vorlaeufige Zusage oder Ablehnung sind erlaubt."),
+        };
+
+        dynamic? response = appointment.Respond(OlEnumMappings.ToOlResponseStatus(request.Response), true, false);
+        try
+        {
+            if (response is null || (int)response.Class != responseClass)
+                throw new OutlookServiceException(ErrorCode.InternalError, "Outlook hat keine passende Meeting-Antwort erzeugt.");
+            if (!string.IsNullOrEmpty(request.Comment))
+                response.Body = request.Comment;
+            response.Send();
+        }
+        finally { ReleaseComObject(response); }
+    }
+
     public async Task<IReadOnlyList<MeetingTimeCandidate>> FindMeetingTimesAsync(
         FindMeetingTimesRequest request,
         CancellationToken cancellationToken = default)
     {
+        var window = GetCalendarWindow(request.TimeWindowStart, request.TimeWindowEnd);
+        var duration = TimeSpan.FromMinutes(request.DurationMinutes);
+        if (duration <= TimeSpan.Zero)
+            throw new OutlookServiceException(ErrorCode.InvalidInput, "Die Meeting-Dauer muss positiv sein.");
         await GetOutlookApplicationAsync(cancellationToken);
         return await RunComAsync(() =>
         {
-            var candidates = new List<MeetingTimeCandidate>();
             dynamic calendar = GetMapiNamespace().GetDefaultFolder(9);
             try
             {
-                var windowStart = DateTime.Parse(request.TimeWindowStart.DateTime, System.Globalization.CultureInfo.InvariantCulture);
-                var windowEnd = DateTime.Parse(request.TimeWindowEnd.DateTime, System.Globalization.CultureInfo.InvariantCulture);
-                var duration = TimeSpan.FromMinutes(request.DurationMinutes);
-                if (windowEnd <= windowStart || duration <= TimeSpan.Zero) return (IReadOnlyList<MeetingTimeCandidate>)candidates;
-
-                dynamic items = calendar.Items;
-                try
+                var busy = new List<(DateTime Start, DateTime End)>();
+                foreach (var (item, start, end) in EnumerateCalendarWindow((object)calendar, window.Start, window.End, null, cancellationToken))
                 {
-                    items.IncludeRecurrences = true;
-                    var startStr = windowStart.ToString("M/d/yyyy h:mm:ss tt", System.Globalization.CultureInfo.InvariantCulture);
-                    var endStr = windowEnd.ToString("M/d/yyyy h:mm:ss tt", System.Globalization.CultureInfo.InvariantCulture);
-                    items = items.Restrict($"[Start] >= '{startStr}' AND [End] <= '{endStr}'");
-                    items.Sort("[Start]");
-
-                    var busyList = new List<(DateTime Start, DateTime End)>();
-                    for (int i = 1; i <= (int)items.Count; i++)
-                    {
-                        dynamic item = items.Item(i);
-                        try
-                        {
-                            bool isAllDay = false;
-                            try { isAllDay = (bool)item.AllDayEvent; } catch { }
-                            if (isAllDay) continue;
-
-                            int busyStatus = 0;
-                            try { busyStatus = (int)item.BusyStatus; } catch { }
-                            if (busyStatus == 0) continue;
-
-                            var s = (DateTime)item.Start;
-                            var e = (DateTime)item.End;
-                            if (e <= s) continue;
-                            busyList.Add((s, e));
-                        }
-                        finally
-                        {
-                            ReleaseComObject(item);
-                        }
-                    }
-
-                    var sortedBusy = busyList.OrderBy(b => b.Start).ToList();
-
-                    DateTime cursor = windowStart;
-                    foreach (var (bs, be) in sortedBusy)
-                    {
-                        if (bs >= windowEnd) break;
-                        if (bs > cursor)
-                        {
-                            AddCandidateIfFits(candidates, cursor, bs < windowEnd ? bs : windowEnd, duration);
-                        }
-                        if (be > cursor) cursor = be;
-                        if (cursor >= windowEnd) break;
-                    }
-                    if (cursor < windowEnd)
-                    {
-                        AddCandidateIfFits(candidates, cursor, windowEnd, duration);
-                    }
+                    dynamic appointment = item;
+                    if (IsBlockingAppointment((int)appointment.BusyStatus, (int)appointment.MeetingStatus))
+                        busy.Add((start, end)); // Non-free all-day items block time just like timed items.
                 }
-                finally
-                {
-                    ReleaseComObject(items);
-                }
+                return BuildMeetingCandidates(busy, window.Start, window.End, duration, request.MaxCandidates);
             }
             finally
             {
                 ReleaseComObject(calendar);
             }
-
-            var ranked = candidates
-                .OrderByDescending(c => (DateTime.Parse(c.End.DateTime, System.Globalization.CultureInfo.InvariantCulture)
-                                       - DateTime.Parse(c.Start.DateTime, System.Globalization.CultureInfo.InvariantCulture)))
-                .ThenBy(c => c.Start.DateTime)
-                .Take(request.MaxCandidates)
-                .ToList();
-            return (IReadOnlyList<MeetingTimeCandidate>)ranked;
         }, nameof(FindMeetingTimesAsync));
     }
 
-    private static void FillAppointmentFromCreateRequest(dynamic appointment, CreateEventRequest request)
+    internal static bool IsBlockingAppointment(int busyStatus, int meetingStatus) =>
+        busyStatus != 0 && !IsCancelledMeeting(meetingStatus); // olFree
+
+    internal static IReadOnlyList<MeetingTimeCandidate> BuildMeetingCandidates(
+        IEnumerable<(DateTime Start, DateTime End)> busy, DateTime windowStart, DateTime windowEnd,
+        TimeSpan duration, int maxCandidates)
+    {
+        var candidates = new List<MeetingTimeCandidate>();
+        var cursor = windowStart;
+        foreach (var (start, end) in busy.OrderBy(b => b.Start))
+        {
+            if (!OverlapsCalendarWindow(start, end, windowStart, windowEnd)) continue;
+            if (start - cursor >= duration)
+                AddCandidate(cursor);
+            if (end > cursor) cursor = end;
+            if (cursor >= windowEnd || candidates.Count == maxCandidates) return candidates;
+        }
+        if (windowEnd - cursor >= duration && candidates.Count < maxCandidates)
+            AddCandidate(cursor);
+        return candidates;
+
+        void AddCandidate(DateTime start) => candidates.Add(new MeetingTimeCandidate
+        {
+            Start = FormatCalendarUtc(start),
+            End = FormatCalendarUtc(start + duration),
+            Confidence = 100,
+            ConflictsAttendeeCount = 0,
+        });
+    }
+
+    private static void FillAppointmentFromCreateRequest(dynamic appointment, CreateEventRequest request, DateTime start, DateTime end)
     {
         appointment.Subject = request.Subject;
         if (request.Body is not null)
-        {
-            var bodyFormat = OlEnumMappings.ToOlBodyFormat(request.Body.ContentType);
-            appointment.BodyFormat = bodyFormat;
-            if (bodyFormat == 2)
-                appointment.HTMLBody = request.Body.Content;
-            else
-                appointment.Body = request.Body.Content;
-        }
-        appointment.Start = DateTime.Parse(request.Start.DateTime, System.Globalization.CultureInfo.InvariantCulture);
-        appointment.End = DateTime.Parse(request.End.DateTime, System.Globalization.CultureInfo.InvariantCulture);
+            appointment.Body = request.Body.Content;
         appointment.AllDayEvent = request.IsAllDay;
+        SetAppointmentWindow((object)appointment, start, end);
         if (!string.IsNullOrEmpty(request.Location))
             appointment.Location = request.Location;
         if (request.ReminderMinutesBeforeStart is int rem)
@@ -276,56 +283,68 @@ public sealed partial class OutlookInteropAdapter
         appointment.Sensitivity = OlEnumMappings.ToOlSensitivity(request.Sensitivity);
     }
 
-    private static void AddAttendees(dynamic appointment, IReadOnlyList<EventAttendeeInput> attendees)
+    private static void SetAppointmentWindow(dynamic appointment, DateTime start, DateTime end)
     {
-        if (attendees.Count == 0) return;
-        foreach (var att in attendees)
-        {
-            dynamic recipient = appointment.Recipients.Add(att.Email);
-            try
-            {
-                if (!string.IsNullOrEmpty(att.Name))
-                {
-                    try { recipient.Name = att.Name; } catch { }
-                }
-                int olType = att.Type switch
-                {
-                    AttendeeType.Optional => 2,
-                    AttendeeType.Resource => 3,
-                    _ => 1,
-                };
-                recipient.Type = olType;
-                try { recipient.Resolve(); } catch { }
-            }
-            finally
-            {
-                ReleaseComObject(recipient);
-            }
-        }
-        try { appointment.Recipients.ResolveAll(); } catch { }
+        if (end <= start)
+            throw new OutlookServiceException(ErrorCode.InvalidInput, "Das Terminende muss nach dem Start liegen.");
+        var allDay = (bool)appointment.AllDayEvent;
+        appointment.StartUTC = start;
+        appointment.EndUTC = end;
+        if (allDay != (bool)appointment.AllDayEvent || (DateTime)appointment.StartUTC != start || (DateTime)appointment.EndUTC != end)
+            throw new OutlookServiceException(ErrorCode.InvalidInput, "Outlook kann das Terminzeitfenster nicht unveraendert abbilden.");
     }
 
-    private static void AddCandidateIfFits(
-        List<MeetingTimeCandidate> candidates,
-        DateTime start,
-        DateTime end,
-        TimeSpan duration)
+    private static void ValidateAppointmentBody(ItemBody? body)
     {
-        if (end - start < duration) return;
-        candidates.Add(new MeetingTimeCandidate
+        if (body is not null && body.ContentType != ItemBodyType.Text)
+            throw new OutlookServiceException(ErrorCode.InvalidInput, "Outlook-Kalendertermine unterstuetzen nur Text als Body.");
+    }
+
+    private static int CountAppointmentAttendees(dynamic appointment)
+    {
+        dynamic recipients = appointment.Recipients;
+        try
         {
-            Start = new DateTimeTimeZone
+            int attendees = 0;
+            for (var i = (int)recipients.Count; i > 0; i--)
             {
-                DateTime = start.ToString("yyyy-MM-ddTHH:mm:ss"),
-                TimeZone = "UTC",
-            },
-            End = new DateTimeTimeZone
+                dynamic recipient = recipients.Item(i);
+                try { if ((int)recipient.Type is 1 or 2 or 3) attendees++; }
+                finally { ReleaseComObject(recipient); }
+            }
+            return attendees;
+        }
+        finally { ReleaseComObject(recipients); }
+    }
+
+    private static void ReplaceAttendees(dynamic appointment, IReadOnlyList<EventAttendeeInput> attendees)
+    {
+        dynamic recipients = appointment.Recipients;
+        try
+        {
+            for (var i = (int)recipients.Count; i > 0; i--)
             {
-                DateTime = (start + duration).ToString("yyyy-MM-ddTHH:mm:ss"),
-                TimeZone = "UTC",
-            },
-            Confidence = 100,
-            ConflictsAttendeeCount = 0,
-        });
+                dynamic recipient = recipients.Item(i);
+                try { if ((int)recipient.Type is 1 or 2 or 3) recipients.Remove(i); }
+                finally { ReleaseComObject(recipient); }
+            }
+            foreach (var attendee in attendees)
+            {
+                dynamic recipient = recipients.Add(attendee.Email);
+                try
+                {
+                    recipient.Type = attendee.Type switch
+                    {
+                        AttendeeType.Optional => 2,
+                        AttendeeType.Resource => 3,
+                        _ => 1,
+                    };
+                }
+                finally { ReleaseComObject(recipient); }
+            }
+            if (attendees.Count != 0 && !(bool)recipients.ResolveAll())
+                throw new OutlookServiceException(ErrorCode.InvalidInput, "Outlook konnte mindestens einen Meeting-Teilnehmer nicht aufloesen.");
+        }
+        finally { ReleaseComObject(recipients); }
     }
 }

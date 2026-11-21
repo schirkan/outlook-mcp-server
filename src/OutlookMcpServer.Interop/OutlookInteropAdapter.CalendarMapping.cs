@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using OutlookMcpServer.Domain.Models.Calendar;
 using OutlookMcpServer.Domain.Models.Common;
 using OutlookMcpServer.Domain.Models.Mail;
@@ -90,12 +89,48 @@ public sealed partial class OutlookInteropAdapter
             ReminderMinutesBeforeStart = reminder.MinutesBeforeStart,
             Categories = categories,
             HasAttachments = meta.HasAttachments,
-            Recurrence = null,
+            Recurrence = meta.Type == EventType.SeriesMaster ? TryMapRecurrencePattern(item) : null,
             ICalUId = meta.ICalUId,
             CreatedDateTime = meta.Created,
             LastModifiedDateTime = meta.Modified,
             ChangeKey = meta.ChangeKey,
             Type = meta.Type,
+        };
+    }
+
+    private static RecurrencePattern? TryMapRecurrencePattern(dynamic appointment)
+    {
+        dynamic? pattern = null;
+        try
+        {
+            pattern = appointment.GetRecurrencePattern();
+            int recurrenceType = (int)pattern.RecurrenceType;
+            bool ends = !(bool)pattern.NoEndDate;
+            return MapRecurrencePattern(recurrenceType, (int)pattern.Interval,
+                recurrenceType is 1 or 3 or 6 ? (int)pattern.DayOfWeekMask : 0,
+                ends ? (DateTime)pattern.PatternEndDate : null,
+                ends ? (int)pattern.Occurrences : null);
+        }
+        catch (System.Runtime.InteropServices.COMException) { return null; }
+        finally { ReleaseComObject(pattern); }
+    }
+
+    internal static RecurrencePattern? MapRecurrencePattern(int type, int interval, int dayMask, DateTime? end, int? count)
+    {
+        string? name = type switch
+        {
+            0 => "daily", 1 => "weekly", 2 => "absoluteMonthly", 3 => "relativeMonthly",
+            5 => "absoluteYearly", 6 => "relativeYearly", _ => null,
+        };
+        if (name is null) return null;
+        string[] weekdays = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+        return new RecurrencePattern
+        {
+            Type = name,
+            Interval = interval,
+            DaysOfWeek = dayMask == 0 ? null : weekdays.Where((_, i) => (dayMask & (1 << i)) != 0).ToArray(),
+            EndDate = end is { } date ? new DateTimeOffset(DateTime.SpecifyKind(date, DateTimeKind.Unspecified), TimeSpan.Zero) : null,
+            Occurrences = count is > 0 ? count : null,
         };
     }
 
@@ -105,28 +140,11 @@ public sealed partial class OutlookInteropAdapter
     private static ItemBody? TryMapAppointmentBody(dynamic item, BodyFormat? bodyFormat)
     {
         if (bodyFormat is null) return null;
-        try
-        {
-            string bodyText = TryGetString(item, "Body") ?? string.Empty;
-            string bodyHtml = TryGetString(item, "HTMLBody") ?? string.Empty;
-            string? nativeSource = null;
-            if (!string.IsNullOrEmpty(bodyHtml))
-            {
-                nativeSource = bodyHtml;
-            }
-            else if (!string.IsNullOrEmpty(bodyText))
-            {
-                nativeSource = bodyText;
-            }
-            if (nativeSource is null || nativeSource.Length == 0) return null;
-            string htmlForConversion = nativeSource == bodyText
-                ? $"<html><body><pre>{System.Net.WebUtility.HtmlEncode(bodyText)}</pre></body></html>"
-                : nativeSource;
-            var (ct, content) = HtmlBodyConverter.Convert(htmlForConversion, bodyFormat.Value);
-            return new ItemBody { ContentType = ct, Content = content };
-        }
-        catch { }
-        return null;
+        string? text = TryGetString(item, "Body");
+        if (string.IsNullOrEmpty(text)) return null;
+        if (bodyFormat == BodyFormat.Html)
+            return new ItemBody { ContentType = ItemBodyType.Html, Content = $"<pre>{System.Net.WebUtility.HtmlEncode(text)}</pre>" };
+        return new ItemBody { ContentType = ItemBodyType.Text, Content = text };
     }
 
     /// <summary>
@@ -136,28 +154,8 @@ public sealed partial class OutlookInteropAdapter
     {
         DateTimeTimeZone? startDttz = null;
         DateTimeTimeZone? endDttz = null;
-        try
-        {
-            var startDt = (DateTime)item.Start;
-            var startTz = TryGetWindowsTimeZoneId(item, "StartTimeZone") ?? "UTC";
-            startDttz = new DateTimeTimeZone
-            {
-                DateTime = startDt.ToString("yyyy-MM-ddTHH:mm:ss"),
-                TimeZone = startTz,
-            };
-        }
-        catch { }
-        try
-        {
-            var endDt = (DateTime)item.End;
-            var endTz = TryGetWindowsTimeZoneId(item, "EndTimeZone") ?? "UTC";
-            endDttz = new DateTimeTimeZone
-            {
-                DateTime = endDt.ToString("yyyy-MM-ddTHH:mm:ss"),
-                TimeZone = endTz,
-            };
-        }
-        catch { }
+        try { startDttz = FormatCalendarUtc((DateTime)item.StartUTC); } catch { }
+        try { endDttz = FormatCalendarUtc((DateTime)item.EndUTC); } catch { }
         return new AppointmentStartEnd(startDttz, endDttz);
     }
 
@@ -274,8 +272,7 @@ public sealed partial class OutlookInteropAdapter
         bool isCancelled = false;
         try
         {
-            var status = (int)item.MeetingStatus;
-            isCancelled = status == 2 || status == 3;
+            isCancelled = IsCancelledMeeting((int)item.MeetingStatus);
         }
         catch { }
 
@@ -327,43 +324,16 @@ public sealed partial class OutlookInteropAdapter
         try { iCalUId = TryGetString(item, "GlobalAppointmentID"); } catch { }
 
         DateTimeOffset? created = null, modified = null;
-        try { created = (DateTimeOffset)item.CreationTime; } catch { }
-        try { modified = (DateTimeOffset)item.LastModificationTime; } catch { }
+        try { created = ((DateTime)item.CreationTime).ToUniversalTime(); } catch { }
+        try { modified = ((DateTime)item.LastModificationTime).ToUniversalTime(); } catch { }
 
         string? changeKey = null;
         try { changeKey = TryGetString(item, "EntryID"); } catch { }
 
         var type = EventType.SingleInstance;
-        try
-        {
-            if ((bool)item.IsRecurring)
-            {
-                type = EventType.SeriesMaster;
-            }
-        }
-        catch { }
+        try { type = MapRecurrenceState((int)item.RecurrenceState); } catch { }
 
         return new AppointmentMetadata(hasAttachments, iCalUId, created, modified, changeKey, type);
     }
 
-    /// <summary>
-    /// Liest die Windows-TimeZone-ID aus einem Outlook-TimeZone-Objekt.
-    /// </summary>
-    private static string? TryGetWindowsTimeZoneId(dynamic item, string propertyName)
-    {
-        try
-        {
-            var tz = item.GetType().GetProperty(propertyName)?.GetValue(item);
-            if (tz is null) return null;
-            try
-            {
-                return (string?)tz.GetType().GetProperty("ID")?.GetValue(tz);
-            }
-            finally
-            {
-                ReleaseComObject(tz);
-            }
-        }
-        catch { return null; }
-    }
 }

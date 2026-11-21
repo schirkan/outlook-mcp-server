@@ -38,7 +38,7 @@ MCP-Server (Model Context Protocol) fuer den Zugriff auf eine lokale **klassisch
 |   MCP-Client (Claude, IDE,  |
 |   eigenes Tool, etc.)       |
 +-------------||--------------+
-              ||  MCP / JSON-RPC / stdio (oder HTTP/SSE)
+              ||  MCP / JSON-RPC / stdio
               ||
 +-------------vv--------------+
 |   OutlookMcpServer (C#)     |
@@ -73,20 +73,21 @@ Vision & Scope: siehe [`specs/VISION.md`](specs/VISION.md).
 - [x] Solution-Scaffold (.NET 8 + MCP SDK + Outlook Interop, `OutlookMcpServer.sln`)
 - [x] Domain-Schicht (DTOs, `IOutlookService`, `OutlookService` mit Validierung)
 - [x] Interop-Adapter Grundgerüst (COM-Boundary Mail+Calendar, `EnumMappings`, 24 Stubs)
-- [x] Konfiguration + DI + Transport (stdio, `appsettings.json`)
+- [x] Konfiguration + DI (`appsettings.json`); einziger MCP-Transport: stdio, ohne Transporteinstellung
 - [x] MCP-Tools (MailTools 16 + CalendarTools 9 + ActiveSelectionTools 3 = **28 Tools** — inkl. Martins `list_mails_recursive` (Karte 4149bc2) + Bulk-Get `get_mails` + `open_item_by_id` (Inspector-Öffnung, 2026-07-28))
-- [x] Unit-Tests xUnit (**47/47 grün**, `OutlookMcpServer.Domain.Tests`) — 35 bestehend + 12 Phase-3h-Tests (Polymorphie / Scope-Filter / Top-Cap / Empty-Selection / Validation / Exception-Propagation)
+- [x] Release-Tests (2026-11-21): **103 profilfreie Tests grün**; 6 Live-Outlook-Tests ohne Opt-in übersprungen. Die Windows-x64-Single-File-EXE hat über stdio alle 28 Tools gemeldet.
 - [x] **Echte COM-Interop-Impl** (Karte 3.5) — alle 26 Methoden implementiert (24 Mail/Calendar + 2 Active-Selection), 0 verbleibende `NotImplementedException`
-- [x] **Bulk-Get `get_mails`** (Bulk-Variante von `get_mail`) — neues MCP-Tool liest 1-50 EntryIDs in einem Aufruf, liefert `{ value: [...], notFoundIds: [...] }` (Bulk-Semantik, einzelne ungültige IDs landen in `notFoundIds`). 11 neue Tests (5 Tool + 6 Service-Validation: null/empty/too-many/empty-id/dedup/happy-path). Code-Schicht: Model + Interop-Adapter (COM-Loop mit per-ID-try/catch) + Service (Validation 1-50 + Dedup) + Tool (CSV-frei, JSON-Array-IDs) + Fakes. Dokumentiert in `specs/API-DESIGN.md` (`### getMails`) + Mapping-Tabelle. Production-Default `includeBody=false` weil Body-Inhalt oft groß.
+- [x] **Bulk-Get `get_mails`** (Bulk-Variante von `get_mail`) — neues MCP-Tool liest 1-50 EntryIDs in einem Aufruf, liefert `{ value: [...], notFoundIds: [...] }` (Bulk-Semantik, einzelne ungültige IDs landen in `notFoundIds`). 11 neue Tests (5 Tool + 6 Service-Validation: null/empty/too-many/empty-id/dedup/happy-path). Code-Schicht: Model + Interop-Adapter (COM-Loop mit per-ID-try/catch) + Service (Validation 1-50 + Dedup) + Tool (CSV-frei, JSON-Array-IDs) + Fakes. Dokumentiert in `specs/API-DESIGN.md` (`### getMails`) + Mapping-Tabelle. Ohne `bodyFormat` werden keine Mail-Bodies geladen.
 - [x] **CI/CD-Pipeline Hardening + Push-Force-Pattern** — Martins Commits 6b053ed (CallSite-Pattern), 4149bc2 (list_mails_recursive), d8ea89e (PublishTrimmed=false), 22479dc (Logging) waren zwischen meinem letzten Push und dieser Session auf origin/main gelandet. Mein Bulk-Get-Commit wurde via `git rebase origin/main` integriert (9/10 Files auto-merged, einziger Konflikt `tests/.../OutlookServiceTests.cs` in der Test-Klasse gelöst via `git checkout --theirs` + manuellem Anhängen von Martins 5 ListMailsRecursive-Tests vor meinen 6 GetMails-Tests). Rebase-Commit `872ebfb` mit korrigierter `--force-with-lease`-Push. Backup-Branch `backup-get-mails` (Original `feb387b`) bleibt bis zur Bestätigung als Rollback-Safety erhalten.
-- [x] **Publish-Profil `minimal.pubxml`** — Self-Contained + Single-File + Compression + Embedded-PDB + InvariantGlobalization → **44,94 MB exe** (PublishTrimmed=false per `d8ea89e` — `BuiltInComInterop.IsSupported=false` unter Trimmed blockiert sonst COM-Aktivierung)
+- [x] **Publish-Profil `minimal.pubxml`** — Windows-x64, Self-Contained, Single-File, komprimiert und mit eingebettetem PDB. Trimming ist für COM deaktiviert; Globalisierung bleibt für Kalenderzeitzonen und lokale Datumsfilter aktiviert.
 - [x] **Integration-Tests Projekt-Skelett** (Karte 7) — `tests/OutlookMcpServer.IntegrationTests/` mit SkippableFact + Outlook-DetectOutlook (5s-Task-Wait-Timeout gegen COM-Haenger) + 6 Beispiel-Tests (3 MailFolder + 3 Calendar). Vollständige Test-Suite (send/create/respond/delete mit Cleanup) + lokale Verifikation durch Martin stehen aus.
-- [x] **README erweitert** (Karte 8) — Features v1 / Quick Start (Build/Test/Publish) / Configuration (appsettings.json + Allow*-Flags-Tabelle) / Transport (stdio + HTTP/SSE-Loopback) / MCP-Client-Setup (Claude Desktop, Cline, Continue.dev) / Architecture (3-Layer + ASCII-Diagramm) / Development (Project-Structure + Add-a-new-MCP-Tool-Workflow) / Roadmap / License
-- [x] **Beispiel-Configs `examples/`** (Karte 9) — separate JSON-Files für Copy-Paste (`claude-desktop-config.json`, `cline-mcp-settings.json`, `appsettings.http.json`, `appsettings.readonly.json` + `examples/README.md`)
+- [x] **README erweitert** (Karte 8) — Features v1 / Quick Start (Build/Test/Publish) / Configuration (appsettings.json + Allow*-Flags-Tabelle) / Transport (stdio) / MCP-Client-Setup (Claude Desktop, Cline, Continue.dev) / Architecture (3-Layer + ASCII-Diagramm) / Development (Project-Structure + Add-a-new-MCP-Tool-Workflow) / Roadmap / License
+- [x] **Beispiel-Configs `examples/`** (Karte 9) — separate JSON-Files für Copy-Paste (`claude-desktop-config.json`, `cline-mcp-settings.json`, `appsettings.readonly.json` + `examples/README.md`)
 - [x] **CI/CD-Pipeline** (GitHub Actions) — `ci.yml` (Build + Test bei push/PR auf main) + `release.yml` (Tag-Triggered Publish + GitHub Release mit auto-generierten Notes). Windows-Runner wegen COM-Interop.
 - [x] **AGENTS.md-Konvention angenommen** (c544c30, 2026-08-04) — Workspace-weite Migration: Umbenennung `PROJECT.md` → `AGENTS.md` per `git mv` (History via Rename-Detection erhalten). `AGENTS.md` ist Auto-Discovery-Standard für Cursor, OpenAI Codex CLI, Cognition Devin, Cline, Aider, Continue, Windsurf, Cody. Historische `PROJECT.md`-Referenzen in `## Aktueller Status`-Sektionen bleiben dokumentarisch erhalten (siehe Workspace-MEMORY-Direktive 2026-08-02).
 - [x] **`.codegraph/` aus VCS ausgeschlossen** (d1e75ca, 2026-08-04) — CodeGraph-Cache (`codegraph.db` ~3,6 MB) gehört nicht ins Repo. Per IDEA-008 vorgesehen, Commit war seit der initialen CodeGraph-Indexierung am 2026-07-31 ausstehend und jetzt nachgeholt.
-- [ ] Manuelle COM-Verifikation gegen echtes Outlook-Profil (Martin) — Karte 7 Acceptance `lokal gruen`
+- [x] Code-Review-Fixes (2026-11-21): Schreib- und Versandgrenzen, Outlook-Objekttypen, Mail-Löschordner/Filter und Kalenderzeiten/Serien. Profilfreie Regressionstests ergänzt; Live-Suite ist Opt-in.
+- [ ] Manuelle COM-Verifikation gegen echtes Outlook-Testprofil (Martin) — Karte 7 Acceptance `lokal gruen`
 
 ## Git
 
@@ -116,7 +117,7 @@ Zwei separate Workflows in `.github/workflows/`:
   - Runner: `windows-latest`, .NET SDK aus `global.json`
   - Steps: checkout (full history) → setup-dotnet (**kein** NuGet-Cache, siehe "Cache-Status" unten) → restore → publish mit `minimal.pubxml` (Self-Contained + Single-File + Compression) → Zip → Upload-Artifact → GitHub-Release (mit auto-generierten Notes aus Commits seit letztem Tag)
   - Permissions: `contents: write` (fuer `gh release create`)
-  - Artifact: `outlook-mcp-server-${{ github.ref_name }}.zip` (OutlookMcpServer.exe ~44.94 MB + pdb + aspnetcorev2_inprocess.dll)
+  - Artifact: `outlook-mcp-server-${{ github.ref_name }}.zip` mit der selbstenthaltenden `OutlookMcpServer.exe`
 
 - **Workflow manuell triggern** (zum Testen ohne Push):
   - GitHub UI: `Actions`-Tab → Workflow auswaehlen → `Run workflow`
@@ -136,7 +137,7 @@ Zwei separate Workflows in `.github/workflows/`:
 
 - **Pipeline-Status (Live, nach erstem v0.1.0 Release):**
   - Erste gepublishte GitHub-Release: **[v0.1.0](https://github.com/schirkan/outlook-mcp-server/releases/tag/v0.1.0)** — ausgeloest durch `git push origin v0.1.0` (Tag-Trigger fuer `release.yml`)
-  - Asset: `outlook-mcp-server.zip` (OutlookMcpServer.exe ~44,94 MB Self-Contained Single-File + pdb + aspnetcorev2_inprocess.dll)
+  - Asset: `outlook-mcp-server.zip` mit `OutlookMcpServer.exe` (~44,94 MB, Self-Contained Single-File)
   - Release-Run-Dauer (Run [29724649418](https://github.com/schirkan/outlook-mcp-server/actions/runs/29724649418)): **~116s (1,9 min)** auf windows-latest
   - CI-Laufzeit (nach Cache-Fix 5bafc3e): **~68s** auf windows-latest
   - Tag-zu-Release-Zeit gesamt: ~2 min (Tag-Push → GitHub Release published + Asset verfuegbar)
@@ -203,7 +204,7 @@ Dreizehn Commits von Martin zwischen den letzten Pushes aus älteren Sessions au
 ## Workboard
 
 - **Board-ID:** `outlook-mcp-server`
-- **Stats:** 10 Karten total · 10 done · 0 in_progress · 0 backlog
+- **Review-Fixes:** `92036fa2-82b6-49ce-bc0c-9400d15ae326` — Schreibschutz, Kalender/Mail und Regressionstests.
 - **Done:**
   - `d8753677-91bc-4181-9e39-4c5139d12990` — Doku: Beispiel-Config + MCP-Client-Setup (Claude Desktop, Cline) (low) — README enthält inline-Configs + `examples/` mit separaten JSON-Files für Copy-Paste
   - `f78b75ed-6f77-439c-abd2-7b03a1d9f371` — Impl: Echte COM-Interop (26 Methoden + Active-Selection) (high)

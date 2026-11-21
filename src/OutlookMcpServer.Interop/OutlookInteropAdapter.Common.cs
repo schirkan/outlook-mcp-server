@@ -101,21 +101,6 @@ public sealed partial class OutlookInteropAdapter
     }
 
     /// <summary>
-    /// Kombiniert benutzerdefinierten DASL-Filter mit optionalem Volltext-Such-Query.
-    /// </summary>
-    private static string CombineDaslFilters(string? userFilter, string? search)
-    {
-        var parts = new List<string>();
-        if (!string.IsNullOrWhiteSpace(userFilter)) parts.Add(userFilter);
-        if (!string.IsNullOrWhiteSpace(search))
-        {
-            var escaped = search!.Replace("'", "''");
-            parts.Add($"([Subject] LIKE '%{escaped}%' OR [Body] LIKE '%{escaped}%')");
-        }
-        return string.Join(" AND ", parts);
-    }
-
-    /// <summary>
     /// Instanziiert Outlook.Application via COM.
     /// </summary>
     private static dynamic GetOrStartOutlookApplication()

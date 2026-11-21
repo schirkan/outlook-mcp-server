@@ -57,7 +57,7 @@ public sealed class MailTools
         [Description("Folder-ID (EntryID) oder Well-Known-Name. Erlaubte Well-Known-Namen: inbox, drafts, sentItems, deletedItems, junkEmail, archive, outbox. WICHTIG: durchsucht NUR diesen Ordner, NICHT seine Unterordner. Fuer alle ungelesenen Mails ueber mehrere Ordner: search_mails mit folderId=null, oder mehrere list_mails-Calls pro Ordner (z. B. via list_mail_folders rekursiv).")] string folderId,
         [Description("Max Anzahl zurueckgegebener Mails (1-100, Default 25). Bei mehr Ergebnissen: skip = N * top fuer Seite N (Pagination).")] int top = 25,
         [Description("Skip-Count fuer Pagination (Default 0). Fuer Seite N: skip = N * top.")] int skip = 0,
-        [Description(@"Optional: DASL-Filterausdruck fuer Outlooks Items.Restrict(). Der Ausdruck wird unverändert an Outlook weitergereicht — bei ungültiger Syntax fällt der Server auf ungefilterte Iteration zurück.
+        [Description(@"Optional: DASL-Filterausdruck fuer Outlooks Items.Restrict(). Wenn Outlook den Filter nicht anwenden kann, antwortet der Server mit InvalidInput statt ungefilterten Ergebnissen.
 
 Syntax: Outlook-DASL (JET-Query-Dialekt). Property-Namen in eckigen Klammern, Operatoren =, <>, >, <, >=, <=, LIKE, AND, OR, NOT.
 
@@ -82,7 +82,7 @@ Beispiele:
     [HasAttachments] = true AND [SenderEmailAddress] LIKE '%@example.com'
 
 Hinweis: dies ist KEIN OData-Filter. Filter wie 'isRead eq false' oder 'receivedDateTime ge 2026-07-21' werden unveraendert an Outlook weitergegeben, was eine COMException ausloest. Verwende stattdessen die DASL-Syntax oben.")] string? filter = null,
-        [Description(@"Optional: Volltext-Suchausdruck. Wird intern als DASL-LIKE-Filter ueber Subject und Body eingesetzt: ([Subject] LIKE '%query%' OR [Body] LIKE '%query%'). Sonderzeichen '%' und '_' werden als Wildcards interpretiert. Beispiel: 'Rechnung' findet Mails mit 'Rechnung' im Subject oder Body.")] string? search = null,
+        [Description(@"Optional: Woertlicher Suchbegriff in Betreff oder Textinhalt, ohne Beachtung der Gross-/Kleinschreibung. Keine Wildcards. Beispiel: 'Rechnung' findet Mails mit 'Rechnung' in Betreff oder Body.")] string? search = null,
         CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("list_mails folderId={FolderId} top={Top} skip={Skip} filter={Filter} search={Search}", folderId, top, skip, filter, search);
@@ -244,7 +244,7 @@ Performance: kann bei grossen PSTs langsam sein (vollstaendiger Ordner-Walk). Be
     public async Task<PagedResult<MailMessage>> ListMailsRecursive(
         [Description(@"Optionale Komma-Liste der Well-Known-Mailordner zur Scope-Einschraenkung. Erlaubte Werte: inbox, drafts, sentItems, deletedItems, junkEmail, archive, outbox. Default = alle genannten (alle Mail-Ordner des Profils). Beispiel: 'inbox,archive' durchsucht nur Posteingang + Archiv (jeweils rekursiv).")] string? scope = null,
         [Description(@"Max Anzahl zurueckgegebener Mails (1-100, Default 25). Hard-Cap; keine Pagination. Bei mehr Treffern wird nach ReceivedTime DESC auf top limitiert; aeltere Mails gehen verloren.")] int top = 25,
-        [Description(@"Optional: DASL-Filterausdruck, wird an Outlook Items.Restrict() weitergereicht. Bei ungueltiger Syntax Fallback auf ungefilterte Iteration pro Folder (Warnung im Server-Log). Haeufig genutzte Properties: [Unread] (boolean, ACHTUNG: nicht [UnRead]!), [Importance] (0=Low,1=Normal,2=High), [HasAttachments] (boolean), [ReceivedTime] (datetime, US-Format 'M/d/yyyy h:mm:ss tt'). Der Server normalisiert 'UnRead' automatisch zu 'Unread' — beides funktioniert.")] string? filter = null,
+        [Description(@"Optional: DASL-Filterausdruck, wird an Outlook Items.Restrict() weitergereicht. Wenn Outlook den Filter nicht anwenden kann, liefert der Server InvalidInput statt ungefilterter Ergebnisse. Haeufig genutzte Properties: [Unread] (boolean, ACHTUNG: nicht [UnRead]!), [Importance] (0=Low,1=Normal,2=High), [HasAttachments] (boolean), [ReceivedTime] (datetime, US-Format 'M/d/yyyy h:mm:ss tt'). Der Server normalisiert 'UnRead' automatisch zu 'Unread' — beides funktioniert.")] string? filter = null,
         CancellationToken cancellationToken = default)
     {
         var scopeList = string.IsNullOrWhiteSpace(scope)

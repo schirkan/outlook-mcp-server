@@ -63,6 +63,9 @@ public abstract class OutlookIntegrationTestBase : IDisposable
     /// </summary>
     private static (bool available, string? reason) DetectOutlook()
     {
+        if (Environment.GetEnvironmentVariable("OUTLOOKMCP_RUN_LIVE_TESTS") != "1")
+            return (false, "Live-Outlook-Tests sind deaktiviert (OUTLOOKMCP_RUN_LIVE_TESTS=1 zum Opt-in)");
+
         try
         {
             var outlookType = Type.GetTypeFromProgID("Outlook.Application");

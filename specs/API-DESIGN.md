@@ -45,7 +45,7 @@ Tool-Eingaben sind JSON-Objekte; Tool-Ausgaben sind JSON-Objekte. Datums-/Zeit-W
 - `top` (int, default 25, max 100)
 - `skip` (int, default 0)
 - `filter` (optional, string): Outlook-DASL-Filter (z. B. `"@SQL=urn:schemas:httpmail:subject LIKE '%urgent%'"`)
-- `search` (optional, string): Volltext-Quicksearch über Subject + BodyPreview (Outlook-InstanteSearch)
+- `search` (optional, string): Wörtliche Teilstringsuche über Betreff und Textinhalt, ohne Wildcards und unabhängig von Groß-/Kleinschreibung
 
 > **Hinweis (geändert 2026-07-24):** `list_mails` liefert **keinen Body**. Wer Body-Inhalt braucht, muss die Mail-IDs aus `list_mails` ziehen und via `get_mail` mit `bodyFormat="markdown"|"text"|"html"` explizit laden. Das spart Tokens + Performance bei typischen Listen-Calls.
 
@@ -131,7 +131,7 @@ der IDs vor dem Loop. Hard-Cap 50 (groesserer Caller soll weiterhin `list_mails`
 
 **Edge Cases**:
 - Alle IDs ungültig → `{ value: [], notFoundIds: [...] }` (kein Fehler)
-- `includeBody=true` mit Mail ohne HTML/Text-Body → `body: null` (analog `getMail`)
+- Ohne `bodyFormat` oder bei einer Mail ohne Inhalt → `body: null` (analog `getMail`)
 - Doppelte IDs in der Anfrage → werden dedupliziert, Mail erscheint nur einmal in `value`
 - Reihenfolge: `value` folgt der Reihenfolge der Eingabe-IDs (post-Dedup)
 
@@ -210,7 +210,7 @@ Limit: `MaxAttachmentBytes` aus Config.
 **Input**:
 - `scope` (optional, string): Komma-Liste der Well-Known-Mailordner. Erlaubte Werte: `inbox, drafts, sentItems, deletedItems, junkEmail, archive, outbox`. Leer/Null = alle Mail-Ordner des Profils. Beispiel: `inbox,archive` durchsucht nur Posteingang + Archiv (jeweils rekursiv).
 - `top` (int, default 25, max 100): Hard-Cap; keine Pagination. Bei mehr Treffern wird nach ReceivedTime DESC auf `top` limitiert; ältere Mails gehen verloren.
-- `filter` (optional, string): DASL-Filterausdruck, wird an Outlook `Items.Restrict()` weitergereicht. Bei ungültiger Syntax Fallback auf ungefilterte Iteration pro Folder (Warnung im Server-Log). Häufig genutzte Properties: `[Unread]` (boolean, ACHTUNG: nicht `[UnRead]`!), `[Importance]` (0=Low, 1=Normal, 2=High), `[HasAttachments]` (boolean), `[ReceivedTime]` (datetime, US-Format `M/d/yyyy h:mm:ss tt`). Der Server normalisiert `[UnRead]` automatisch zu `[Unread]` — beides funktioniert.
+- `filter` (optional, string): DASL-Filterausdruck, wird an Outlook `Items.Restrict()` weitergereicht. Wenn Outlook den Ausdruck nicht anwenden kann, schlägt die Anfrage mit `InvalidInput` fehl statt ungefilterte Ergebnisse zurückzugeben. Häufig genutzte Properties: `[Unread]` (boolean, ACHTUNG: nicht `[UnRead]`!), `[Importance]` (0=Low, 1=Normal, 2=High), `[HasAttachments]` (boolean), `[ReceivedTime]` (datetime, US-Format `M/d/yyyy h:mm:ss tt`). Der Server normalisiert `[UnRead]` automatisch zu `[Unread]` — beides funktioniert.
 
 > **Hinweis (geändert 2026-07-24):** `list_mails_recursive` liefert **keinen Body**. Für Body-Inhalt: EntryIDs aus dem Result ziehen + `get_mails` (Bulk) oder `get_mail` (einzeln) aufrufen.
 
@@ -251,7 +251,7 @@ Limit: `MaxAttachmentBytes` aus Config.
 - `skip` (int, default 0)
 - `filter` (optional, string): z. B. `"showAs eq 'busy'"` (einfache Equality-Filter, intern auf DASL gemappt)
 
-> **Hinweis (geändert 2026-07-24):** `list_events` liefert **keinen Body**. Für Body-Inhalt: EntryIDs aus dem Result ziehen + `get_event` mit `bodyFormat` aufrufen. Calendar verwendet denselben `HtmlBodyConverter` wie Mail — verhindert Word/Outlook-Styling-Bloat bei LLM-Consumern.
+> **Hinweis (geändert 2026-07-24):** `list_events` liefert **keinen Body**. Für Body-Inhalt: EntryIDs aus dem Result ziehen + `get_event` mit `bodyFormat` aufrufen. Bei Kalender-Items basiert der Body auf Outlooks Klartext-Eigenschaft.
 
 **Output**:
 ```json
@@ -286,7 +286,7 @@ Limit: `MaxAttachmentBytes` aus Config.
 
 **Input**:
 - `id` (string, required)
-- `bodyFormat` (optional, string): Format des `CalendarEvent.body.content`. Erlaubte Werte: `markdown`, `text`, `html`. Outlook speichert intern immer HTML — der Server konvertiert on-the-fly. Default = `null` (kein Body); explizit setzen um Body zu laden.
+- `bodyFormat` (optional, string): Format des `CalendarEvent.body.content`. `text` und `markdown` liefern Klartext; `html` liefert HTML-kodierten Klartext, nicht das Original-HTML. Default = `null` (kein Body).
 **Output**: einzelnes Event (Properties wie oben + `body`, `hasAttachments`, `recurrence`)
 
 ### `createEvent`
@@ -295,7 +295,7 @@ Limit: `MaxAttachmentBytes` aus Config.
 ```json
 {
   "subject": "Team-Meeting",
-  "body": { "contentType": "html", "content": "<b>Agenda</b>: ..." },
+  "body": { "contentType": "text", "content": "Agenda: ..." },
   "start": { "dateTime": "2026-07-17T14:00:00", "timeZone": "Europe/Berlin" },
   "end":   { "dateTime": "2026-07-17T15:00:00", "timeZone": "Europe/Berlin" },
   "isAllDay": false,
@@ -313,6 +313,8 @@ Limit: `MaxAttachmentBytes` aus Config.
 }
 ```
 
+Kalender-Bodies akzeptieren beim Schreiben nur `text`; HTML wird mit `InvalidInput` abgelehnt.
+
 **Output**: `{ "id": "EntryID-..." }` (gesendete Termineinladung an alle Attendees, wenn `sendInvitations=true`)
 
 ### `updateEvent` (PATCH)
@@ -321,13 +323,13 @@ Limit: `MaxAttachmentBytes` aus Config.
 
 ### `deleteEvent`
 
-**Input**: `id`, `sendCancellation` (bool, default true)
+**Input**: `id`, `sendCancellation` (bool, default true). Eigene aktive Meetings werden über COM nicht gelöscht: Outlook bietet dabei keinen verlässlichen Weg, den Versand einer Absage zu steuern. Diese Meetings bitte in Outlook absagen bzw. löschen; die API meldet den Vorgang nicht fälschlich als erfolgreich.
 
 ### `respondToEvent` (Accept / Tentative / Decline)
 
 **Input**: `id`, `response` (`accepted|tentativelyAccepted|declined`), `comment` (optional, wird in die Antwort-Mail an den Organizer übernommen)
 **Output**: `{ "ok": true }`
-Implementierung: `MeetingItem.Respond(OlResponseStatus, true, true)` (letzter Parameter = keine Mail an Organizer wenn false; wir wollen true → Antwort an Organizer).
+Implementierung: `AppointmentItem.Respond` erzeugt ein `MeetingItem` ohne UI. Der Server setzt den optionalen Kommentar im Antworttext und sendet das `MeetingItem` bei erlaubtem Versand.
 
 ### `findMeetingTimes` (free/busy, Self only in v1)
 
@@ -596,5 +598,5 @@ Listen-Tools liefern `value: [...]` + `nextSkip: <int> | null`. Client setzt `sk
 
 - Input: `dateTime` als ISO-8601 (lokal ohne Offset) + `timeZone` als IANA-Name (z. B. `"Europe/Berlin"`) ODER `dateTime` als UTC mit `Z`-Suffix
 - Intern: Outlook speichert Termine in zwei Formen — lokal (für Anzeige in Outlook) und UTC (für Vergleiche). `AppointmentItem.Start`/`End` ist die lokale Variante; `.StartUTC`/`.EndUTC` ist UTC.
-- Mapping: `DateTimeTimeZone { dateTime, timeZone }` → COM-`Start`/`End` mit passender `StartTimeZone`/`EndTimeZone`-Property.
-- Output: für Termine aus Outlook → lokale `dateTime` + `timeZone` (aus `StartTimeZone.Name`); UTC-Variante als `originalStartUtc` in `getEvent` (für Vergleiche).
+- Mapping: `DateTimeTimeZone { dateTime, timeZone }` → UTC → COM-`StartUTC`/`EndUTC`. Bei mehrdeutigen lokalen Uhrzeiten ist ein expliziter Offset erforderlich.
+- Output: Zeitpunkte werden mit `timeZone: "UTC"` ausgegeben.

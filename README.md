@@ -2,7 +2,7 @@
 
 MCP-Server (Model Context Protocol) for accessing a **classic** Outlook installation on Windows via COM-Interop. Reads and writes **emails** and **calendar entries** without cloud, without Microsoft Graph API, without the modern "New Outlook".
 
-> Status: **v1 in active development** — Karte 3.5 (COM-Interop) is complete, README + Integration-Tests are next on the backlog.
+> Status: **v1 in active development.** This README describes the current source on `main`. The local server exposes 28 MCP tools over stdio; live Outlook validation of the write paths remains open.
 
 ## Features (v1)
 
@@ -17,19 +17,19 @@ MCP-Server (Model Context Protocol) for accessing a **classic** Outlook installa
 - `create_draft` — persist draft without sending
 - `update_mail` — PATCH-style: `isRead`, `categories`, `importance`
 - `move_mail` / `copy_mail` — returns new EntryID (Outlook changes EntryID on Move!)
-- `delete_mail` — soft (to DeletedItems) or hard (irrecoverable)
+- `delete_mail` — soft delete moves to the owning mailbox’s Deleted Items. Hard delete removes the message from that folder; server-side recovery or retention depends on mailbox policy.
 
 ### Calendar (read)
 - `list_calendars` / `get_calendar` — all calendars in profile + default-calendar flag
-- `list_events` — time-window query (Start/End, IANA-TZ) with optional calendar scope; **kein Body** (Header-only Listen-Call)
+- `list_events` — time-window query (Start/End, IANA-TZ) with optional calendar scope; returned timestamps are UTC; **kein Body** (Header-only Listen-Call)
 - `get_event` — full event incl. attendees, organizer, body, recurrence; supports `bodyFormat`-Parameter (`markdown`/`text`/`html`, Default `null` = kein Body)
 
 ### Calendar (write)
-- `create_event` — with optional attendees (Required/Optional/Resource) + invitations
-- `update_event` — PATCH-style fields incl. attendees, reminders, categories
-- `delete_event` — cancellation handling (Outlook sends cancellation to attendees automatically)
+- `create_event` — with optional attendees (Required/Optional/Resource) and invitations; optional body is plain text
+- `update_event` — PATCH-style fields incl. attendees, reminders, categories; optional body is plain text
+- `delete_event` — deletes standalone appointments. Active meetings you organize must be cancelled or deleted in Outlook itself; the COM adapter rejects these requests instead of claiming a cancellation was sent.
 - `respond_to_event` — `accepted` / `tentativelyAccepted` / `declined`
-- `find_meeting_times` — local best-slot heuristic in given time window
+- `find_meeting_times` — finds free slots in the default calendar, accounting for overlapping and busy all-day appointments
 
 ### Active-Inspector / Selection (COM-only, no Graph equivalent)
 - `get_active_item` — currently open item in Outlook's Inspector (mail or event), null if no inspector or out-of-scope type
@@ -57,10 +57,14 @@ dotnet build OutlookMcpServer.sln
 ### Run tests
 
 ```bash
-# Unit tests (no Outlook required, FakeOutlookService)
-dotnet test tests/OutlookMcpServer.Domain.Tests/
+# Unit and regression tests (no Outlook profile required)
+dotnet test tests/OutlookMcpServer.Domain.Tests/ -c Release
+```
 
-# Integration tests (require running Outlook profile)
+Live integration tests are skipped unless explicitly opted in. Use a dedicated classic Outlook test profile:
+
+```powershell
+$env:OUTLOOKMCP_RUN_LIVE_TESTS = '1'
 dotnet test tests/OutlookMcpServer.IntegrationTests/
 ```
 
@@ -74,14 +78,16 @@ dotnet publish src/OutlookMcpServer/OutlookMcpServer.csproj \
   -p:PublishProfile=src/OutlookMcpServer/Properties/PublishProfiles/minimal.pubxml
 ```
 
-Output: `src/OutlookMcpServer/bin/Release/net8.0-windows/win-x64/publish/OutlookMcpServer.exe` (~44.94 MB compressed single-file, includes .NET runtime, no install needed on target). PublishTrimmed=false (COM-Aktivierung würde sonst blockieren — siehe DECISIONS.md 2026-07-21).
+Output: `src/OutlookMcpServer/bin/Release/net8.0-windows/win-x64/publish/OutlookMcpServer.exe` (self-contained; no separate .NET runtime install needed). Trimming is disabled to preserve COM activation. Globalization is enabled so calendar operations can handle named time zones and Outlook’s locale-specific dates.
 
 ## Configuration
 
 Configuration sources (highest priority first):
-1. Command-line arguments
-2. Environment variables (`OUTLOOKMCPSERVER__SECTION__KEY`)
-3. `appsettings.json` (shipped with binary)
+1. Command-line arguments, e.g. `--OutlookMcpServer:Outlook:AllowSend=false`
+2. Environment variables, e.g. `OUTLOOKMCPSERVER__OUTLOOK__ALLOWSEND=false`
+3. `appsettings.json` next to the executable, independent of the working directory
+
+The canonical double-underscore environment names override legacy prefixed names such as `OUTLOOKMCPSERVER_OutlookMcpServer__Outlook__AllowSend`. The optional file logger still accepts `Logging:FilePath` in JSON or `OUTLOOKMCPSERVER_Logging__FilePath` in the environment.
 
 ### Outlook settings
 
@@ -108,33 +114,20 @@ Configuration sources (highest priority first):
 | `ProfileName` | `null` | Specific Outlook profile name to use, or null for the default profile |
 | `AutoStartOutlook` | `true` | If Outlook is not running, start it automatically via `outlook.exe` |
 | `StartupTimeoutSeconds` | `30` | Max seconds to wait for Outlook to start |
-| `AllowSend` | `true` | Master switch for `send_mail` and `appointment.Send()` (invites) |
-| `AllowCreate` | `true` | Master switch for `create_draft` and `create_event` |
+| `AllowSend` | `true` | Allows mail, meeting invitations, updates with notification, cancellations and meeting responses to be sent |
+| `AllowCreate` | `true` | Allows creating drafts/events, updating/copying/moving items and opening an Outlook inspector |
 | `AllowDelete` | `true` | Master switch for `delete_mail` and `delete_event` |
 | `MaxAttachmentBytes` | `26214400` (25 MB) | Max size for inline attachments in `send_mail` / `create_draft` |
 
-All `Allow*` flags can be disabled in production to make the server effectively read-only.
+Set all three `Allow*` flags to `false` for read-only mode. When `AllowSend` is `false`, local calendar edits require `sendInvitations: false` or `sendUpdate: false` as applicable; requests that would send a notification are rejected.
 
 ### Transport
 
-- **stdio** (default): standard MCP transport for local subprocess execution (Claude Desktop, Cline)
-- **HTTP/SSE loopback** (optional): bind to `127.0.0.1` only — **never** `0.0.0.0` (credential-drift risk)
-
-```json
-{
-  "OutlookMcpServer": {
-    "Transport": "stdio",
-    "Http": {
-      "Host": "127.0.0.1",
-      "Port": 51204
-    }
-  }
-}
-```
+The only MCP transport is **stdio**. The client starts the server as a local subprocess. No transport setting is needed, and the server opens no network listener.
 
 ## MCP Client Setup
 
-The server speaks MCP/JSON-RPC over stdio (default) or HTTP/SSE loopback. Below are example configs for common MCP clients — adjust paths to your published exe.
+Adjust the `command` path in your client's configuration to point to your published executable.
 
 ### Claude Desktop
 
@@ -213,7 +206,7 @@ The `autoApprove` array in Cline (or analogous setting in other clients) control
 
 ## Example Tool Calls
 
-The server speaks MCP/JSON-RPC 2.0 over stdio (one JSON object per line). These are real payloads you can adapt when building custom MCP clients, debugging in stdio mode, or writing integration tests against the contract.
+The server speaks MCP/JSON-RPC 2.0 over stdio (one JSON object per line). These are real payloads you can adapt when building custom MCP clients, debugging, or writing integration tests against the contract.
 
 ### List unread inbox mails
 
@@ -298,19 +291,6 @@ Request:
 }
 ```
 
-### HTTP/SSE loopback example
-
-For custom clients that prefer HTTP over stdio, configure the server with `Transport: "http"` and POST a JSON-RPC request to the SSE endpoint:
-
-```bash
-curl -N -H "Content-Type: application/json" \
-     -H "Accept: text/event-stream" \
-     -X POST http://127.0.0.1:51204/mcp \
-     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
-```
-
-The server returns Server-Sent Events with `data: {...}\n\n` per event.
-
 ## Architecture
 
 ```
@@ -340,7 +320,7 @@ Three-layer architecture:
 2. **Domain-Layer** (`OutlookService`, `IOutlookService`): Microsoft-Graph-compatible DTOs, validation (`ValidationHelpers`), policy enforcement (`AllowSend` / `AllowDelete` / `AllowCreate`).
 3. **COM-Adapter-Layer** (`OutlookInteropAdapter`, `IInteropOutlookAdapter`): einzige Stelle mit `Marshal.ReleaseComObject`. Single-threaded via `SemaphoreSlim _comLock` (Outlook COM is single-threaded-affine).
 
-API-Semantik follows Microsoft Graph (snake_case tool names, Graph-compatible DTOs with `JsonPropertyName`). Implementation is COM-Interop, no HTTP/Graph endpoint.
+API-Semantik follows Microsoft Graph (snake_case tool names, Graph-compatible DTOs with `JsonPropertyName`). Outlook access uses COM interop, not the Microsoft Graph API.
 
 ## Development
 

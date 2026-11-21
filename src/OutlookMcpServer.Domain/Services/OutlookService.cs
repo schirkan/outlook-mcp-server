@@ -174,7 +174,12 @@ public sealed class OutlookService : IOutlookService
         SendMailRequest request,
         CancellationToken cancellationToken = default)
     {
-        EnsureSendAllowed(request);
+        EnsureSendAllowed();
+        if (string.IsNullOrEmpty(request.ReplyToId) && string.IsNullOrEmpty(request.ForwardFromId) && request.To.Count == 0)
+        {
+            throw new OutlookServiceException(ErrorCode.InvalidInput,
+                "to: mindestens eine Empfaenger-Adresse erforderlich (ausser bei replyToId/forwardFromId)");
+        }
         ValidateSendMailRequest(request);
         return _adapter.SendMailAsync(request, cancellationToken);
     }
@@ -194,6 +199,7 @@ public sealed class OutlookService : IOutlookService
         CancellationToken cancellationToken = default)
     {
         ValidationHelpers.ValidateStringNotEmpty(id, nameof(id));
+        EnsureModifyAllowed();
         return _adapter.UpdateMailAsync(id, update, cancellationToken);
     }
 
@@ -204,6 +210,7 @@ public sealed class OutlookService : IOutlookService
     {
         ValidationHelpers.ValidateStringNotEmpty(id, nameof(id));
         ValidationHelpers.ValidateFolderId(destinationFolderId, nameof(destinationFolderId));
+        EnsureModifyAllowed();
         return _adapter.MoveMailAsync(id, destinationFolderId, cancellationToken);
     }
 
@@ -214,6 +221,7 @@ public sealed class OutlookService : IOutlookService
     {
         ValidationHelpers.ValidateStringNotEmpty(id, nameof(id));
         ValidationHelpers.ValidateFolderId(destinationFolderId, nameof(destinationFolderId));
+        EnsureModifyAllowed();
         return _adapter.CopyMailAsync(id, destinationFolderId, cancellationToken);
     }
 
@@ -284,6 +292,7 @@ public sealed class OutlookService : IOutlookService
     {
         EnsureCreateAllowed();
         ValidateCreateEventRequest(request);
+        if (request.SendInvitations && request.Attendees.Count > 0) EnsureSendAllowed();
         return _adapter.CreateEventAsync(request, cancellationToken);
     }
 
@@ -293,6 +302,10 @@ public sealed class OutlookService : IOutlookService
         CancellationToken cancellationToken = default)
     {
         ValidationHelpers.ValidateStringNotEmpty(id, nameof(id));
+        EnsureModifyAllowed();
+        if (update.SendUpdate) EnsureSendAllowed();
+        if (update.Start is not null) ValidationHelpers.ValidateDateTimeTimeZone(update.Start, nameof(update.Start));
+        if (update.End is not null) ValidationHelpers.ValidateDateTimeTimeZone(update.End, nameof(update.End));
         return _adapter.UpdateEventAsync(id, update, cancellationToken);
     }
 
@@ -308,6 +321,7 @@ public sealed class OutlookService : IOutlookService
                 "Loeschen ist deaktiviert (OutlookMcpServer:Outlook:AllowDelete=false)");
         }
         ValidationHelpers.ValidateStringNotEmpty(id, nameof(id));
+        if (sendCancellation) EnsureSendAllowed();
         return _adapter.DeleteEventAsync(id, sendCancellation, cancellationToken);
     }
 
@@ -317,12 +331,13 @@ public sealed class OutlookService : IOutlookService
         CancellationToken cancellationToken = default)
     {
         ValidationHelpers.ValidateStringNotEmpty(id, nameof(id));
-        if (request.Response == Response.None || request.Response == Response.NotResponded)
+        if (request.Response is not (Response.Accepted or Response.TentativelyAccepted or Response.Declined))
         {
             throw new OutlookServiceException(
                 ErrorCode.InvalidInput,
                 $"response: '{request.Response}' ist nicht zulaessig fuer respondToEvent");
         }
+        EnsureSendAllowed();
         return _adapter.RespondToEventAsync(id, request, cancellationToken);
     }
 
@@ -342,6 +357,7 @@ public sealed class OutlookService : IOutlookService
         CancellationToken cancellationToken = default)
     {
         ValidationHelpers.ValidateStringNotEmpty(id, nameof(id));
+        EnsureModifyAllowed();
         return _adapter.OpenItemByIdAsync(id, cancellationToken);
     }
 
@@ -367,7 +383,7 @@ public sealed class OutlookService : IOutlookService
 
     // ===== Private Helpers =====
 
-    private void EnsureSendAllowed(SendMailRequest request)
+    private void EnsureSendAllowed()
     {
         if (!_options.Outlook.AllowSend)
         {
@@ -375,16 +391,14 @@ public sealed class OutlookService : IOutlookService
                 ErrorCode.SendDisabled,
                 "Senden ist deaktiviert (OutlookMcpServer:Outlook:AllowSend=false)");
         }
-        // replyToId / forwardFromId ohne Mail-Versand waere Quatsch, aber erlaubt.
-        // Wenn kein replyToId/forwardFromId: muss 'to' mindestens eine Adresse haben.
-        if (string.IsNullOrEmpty(request.ReplyToId) && string.IsNullOrEmpty(request.ForwardFromId))
+    }
+
+    private void EnsureModifyAllowed()
+    {
+        if (!_options.Outlook.AllowCreate)
         {
-            if (request.To.Count == 0)
-            {
-                throw new OutlookServiceException(
-                    ErrorCode.InvalidInput,
-                    "to: mindestens eine Empfaenger-Adresse erforderlich (ausser bei replyToId/forwardFromId)");
-            }
+            throw new OutlookServiceException(ErrorCode.PermissionDenied,
+                "Aenderungen sind deaktiviert (OutlookMcpServer:Outlook:AllowCreate=false)");
         }
     }
 

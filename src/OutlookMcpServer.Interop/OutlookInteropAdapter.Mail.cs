@@ -201,7 +201,6 @@ public sealed partial class OutlookInteropAdapter
             dynamic? items = null;
             try
             {
-                string combinedFilter = CombineDaslFilters(normalizedFilter, search);
                 items = folder.Items;
 
                 int rawCount = 0;
@@ -210,26 +209,11 @@ public sealed partial class OutlookInteropAdapter
                     "ListMails raw item count before Restrict: {RawCount} (folder={FolderName})",
                     rawCount, folderName);
 
-                try
+                if (!string.IsNullOrWhiteSpace(normalizedFilter))
                 {
-                    if (!string.IsNullOrWhiteSpace(combinedFilter))
-                    {
-                        items = items.Restrict(combinedFilter);
-                        int restrictedCount = 0;
-                        try { restrictedCount = (int)items.Count; } catch { }
-                        _logger.LogInformation(
-                            "ListMails Restrict OK: {Count} items nach Filter (folder={FolderName})",
-                            restrictedCount, folderName);
-                    }
-                }
-                catch (COMException restrictEx)
-                {
-                    _logger.LogWarning(restrictEx,
-                        "ListMails Restrict fehlgeschlagen (HResult=0x{HResult:X8}); " +
-                        "Fallback auf ungefilterte Iteration. filter={Filter} search={Search}",
-                        restrictEx.HResult, normalizedFilter, search);
-                    ReleaseComObject(items);
-                    items = folder.Items;
+                    var originalItems = items;
+                    items = RestrictMailItems((object)originalItems, normalizedFilter);
+                    if (!ReferenceEquals(originalItems, items)) ReleaseComObject(originalItems);
                 }
 
                 try
@@ -247,14 +231,18 @@ public sealed partial class OutlookInteropAdapter
                 int total = 0;
                 try { total = (int)items.Count; } catch { }
 
-                int start = Math.Min(skip, total);
-                int end = Math.Min(skip + top, total);
-                var slice = new List<MailMessage>(end - start);
+                bool hasSearch = !string.IsNullOrWhiteSpace(search);
+                int start = hasSearch ? 0 : Math.Min(skip, total);
+                int end = hasSearch ? total : start + Math.Min(top, total - start);
+                var slice = new List<MailMessage>(top);
+                int matched = 0;
+                bool moreMatches = false;
                 int skippedNonMail = 0;
                 int failedItems = 0;
 
                 for (int i = start; i < end; i++)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     dynamic? item = null;
                     try
                     {
@@ -280,6 +268,21 @@ public sealed partial class OutlookInteropAdapter
                             continue;
                         }
 
+                        if (hasSearch)
+                        {
+                            string subject = TryGetString(item, "Subject") ?? string.Empty;
+                            if (!subject.Contains(search!, StringComparison.OrdinalIgnoreCase))
+                            {
+                                string body = TryGetString(item, "Body") ?? string.Empty;
+                                if (!body.Contains(search!, StringComparison.OrdinalIgnoreCase)) continue;
+                            }
+                            if (matched++ < skip) continue;
+                            if (slice.Count == top)
+                            {
+                                moreMatches = true;
+                                break;
+                            }
+                        }
                         slice.Add(MapMailItem(item, null, _logger));
                     }
                     catch (COMException mapEx)
@@ -311,7 +314,7 @@ public sealed partial class OutlookInteropAdapter
                 return new PagedResult<MailMessage>
                 {
                     Value = slice,
-                    NextSkip = end < total ? end : (int?)null,
+                    NextSkip = hasSearch ? (moreMatches ? matched - 1 : null) : (end < total ? end : null),
                 };
             }
             finally
@@ -636,10 +639,11 @@ public sealed partial class OutlookInteropAdapter
                   }
                 : new List<string>(scope);
 
+            string? normalizedFilter = NormalizeDaslFilter(filter);
             var collected = new List<(string EntryId, DateTime Received, MailMessage Msg)>(top * 2);
             var seen = new HashSet<string>(StringComparer.Ordinal);
             int visitedFolders = 0, skippedFolders = 0, skippedNonMail = 0,
-                failedItems = 0, restrictedItems = 0, fallbackFolders = 0;
+                failedItems = 0, restrictedItems = 0;
 
             dynamic root = GetMapiNamespace();
             try
@@ -689,7 +693,7 @@ public sealed partial class OutlookInteropAdapter
                         {
                             CollectMailsFromFolderRecursive(
                                 folder,
-                                filter,
+                                normalizedFilter,
                                 top,
                                 collected,
                                 seen,
@@ -697,13 +701,13 @@ public sealed partial class OutlookInteropAdapter
                                 ref skippedFolders,
                                 ref skippedNonMail,
                                 ref failedItems,
-                                ref restrictedItems,
-                                ref fallbackFolders);
+                                ref restrictedItems);
                             _logger.LogInformation(
                                 "ListMailsRecursive Top-Level {Name} fertig: collected={Collected}/{Top} visitedFolders={Visited}",
                                 name, collected.Count, top, visitedFolders);
                             if (collected.Count >= top) break;
                         }
+                        catch (OutlookServiceException) { throw; }
                         catch (COMException ex)
                         {
                             skippedFolders++;
@@ -745,9 +749,9 @@ public sealed partial class OutlookInteropAdapter
             _logger.LogInformation(
                 "ListMailsRecursive DONE returned={Returned} visitedFolders={Visited} " +
                 "skippedFolders={Skipped} skippedNonMail={SkippedNonMail} failedItems={FailedItems} " +
-                "restrictedHits={Restricted} fallbackFolders={Fallback}",
+                "restrictedHits={Restricted}",
                 slice.Count, visitedFolders, skippedFolders, skippedNonMail,
-                failedItems, restrictedItems, fallbackFolders);
+                failedItems, restrictedItems);
 
             return new PagedResult<MailMessage>
             {
@@ -767,8 +771,7 @@ public sealed partial class OutlookInteropAdapter
         ref int skippedFolders,
         ref int skippedNonMail,
         ref int failedItems,
-        ref int restrictedItems,
-        ref int fallbackFolders)
+        ref int restrictedItems)
     {
         dynamic? items = null;
         try
@@ -792,39 +795,14 @@ public sealed partial class OutlookInteropAdapter
             if (items is not null)
             {
                 visitedFolders++;
-                dynamic? restricted = null;
-                try
+                if (!string.IsNullOrWhiteSpace(filter))
                 {
-                    if (!string.IsNullOrWhiteSpace(filter))
-                    {
-                        restricted = items.Restrict(filter!);
-                        var c = (int)restricted.Count;
-                        _logger.LogInformation(
-                            "ListMailsRecursive Restrict OK: folder={FolderName} hits={Hits}",
-                            (string)(TryGetString(parent, "Name") ?? "?"), c);
-                    }
-                    else
-                    {
-                        restricted = items;
-                    }
+                    var originalItems = items;
+                    items = RestrictMailItems((object)originalItems, filter);
+                    if (!ReferenceEquals(originalItems, items)) ReleaseComObject(originalItems);
                 }
-                catch (COMException restrictEx)
-                {
-                    fallbackFolders++;
-                    _logger.LogWarning(restrictEx,
-                        "ListMailsRecursive Restrict fehlgeschlagen (HResult=0x{HResult:X8}); " +
-                        "Fallback auf ungefilterte Iteration. filter={Filter}",
-                        restrictEx.HResult, filter);
-                    ReleaseComObject(items);
-                    try { items = parent.Items; } catch { items = null; }
-                    restricted = items;
-                }
-                if (restricted is not null)
-                {
-                    CollectItemsInto(restricted, top, collected, seen,
-                        ref skippedNonMail, ref failedItems, ref restrictedItems);
-                    ReleaseComObject(restricted);
-                }
+                CollectItemsInto(items, top, collected, seen,
+                    ref skippedNonMail, ref failedItems, ref restrictedItems);
             }
         }
         finally
@@ -869,8 +847,7 @@ public sealed partial class OutlookInteropAdapter
                         ref skippedFolders,
                         ref skippedNonMail,
                         ref failedItems,
-                        ref restrictedItems,
-                        ref fallbackFolders);
+                        ref restrictedItems);
                     if (collected.Count >= top) return;
                 }
                 finally
@@ -885,6 +862,19 @@ public sealed partial class OutlookInteropAdapter
             {
                 ReleaseComObject(subFolders);
             }
+        }
+    }
+
+    internal static object RestrictMailItems(object collection, string filter)
+    {
+        try
+        {
+            return ((dynamic)collection).Restrict(filter);
+        }
+        catch (COMException ex)
+        {
+            throw new OutlookServiceException(ErrorCode.InvalidInput,
+                "Outlook konnte den Mailfilter nicht anwenden", ex);
         }
     }
 

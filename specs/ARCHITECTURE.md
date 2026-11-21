@@ -7,8 +7,7 @@
 | MCP-Client (Claude Desktop, Continue, Cline,   |
 | eigenes Tool, etc.)                            |
 +--------------------||--------------------------+
-                     || MCP / JSON-RPC
-                     || (stdio default, HTTP/SSE loopback optional)
+                     || MCP / JSON-RPC / stdio
 +--------------------vv--------------------------+
 | OutlookMcpServer (C# / .NET 8+ / win-x64)      |
 |                                                |
@@ -46,7 +45,7 @@
 
 - **Verantwortung**: MCP-Protokoll-Handling, Tool-Registrierung, JSON-Schema-Generierung, Konfiguration
 - **Stack**: `ModelContextProtocol` NuGet, attribute-based registration
-- **Transport**: stdio (Default für lokale Clients) oder HTTP/SSE (loopback) — Auswahl per `appsettings.json`
+- **Transport**: ausschließlich stdio; keine Transporteinstellung nötig. Der MCP-Client startet den Server als lokalen Subprozess.
 - **DI**: `Microsoft.Extensions.Hosting` + `Microsoft.Extensions.DependencyInjection`
 - **Logging**: `Microsoft.Extensions.Logging` → `ILogger<T>` → Serilog/Sink konfigurierbar
 
@@ -198,14 +197,13 @@ Client
 
 ### Active-Selection und Outlook-Single-Threading
 
-COM-Single-Threading-Apartment: alle Outlook-COM-Aufrufe laufen im STA-Thread. Der MCP-Server ist per Default `Main(args).Run()` ein Top-Level STA-Thread (siehe Karte 5: `Host.CreateApplicationBuilder` + `app.Run()`); Outlook-COM-Aufrufe müssen in den richtigen Apartment gemarshallt werden. Wir verwenden die PIA-eigenen Calls (sie sind MTA-frei), nicht `Task.Run` für COM-Operationen.
+COM-Single-Threading-Apartment: alle Outlook-COM-Aufrufe laufen im STA-Thread. Transport und Host legen das COM-Apartment nicht fest; Outlook-COM-Aufrufe müssen in den richtigen Apartment gemarshallt werden. Wir verwenden die PIA-eigenen Calls (sie sind MTA-frei), nicht `Task.Run` für COM-Operationen.
 
 ## Sicherheit & Isolation
 
 - **Prozessgrenze**: Server läuft im User-Kontext des angemeldeten Windows-Benutzers. Outlook-Profil ist implizit.
-- **Kein Credential-Store**: keine Tokens, keine Secrets im Repo oder in Config-Dateien.
-- **Kein Netzwerk-Endpoint by default**: stdio-Transport, Client startet Server als Subprozess.
-- **HTTP/SSE nur loopback**: bei `Transport=http` immer `Host=127.0.0.1`, niemals `0.0.0.0`.
+- **Kein Credential-Store**: keine Secrets im Repo oder in Config-Dateien.
+- **Kein Netzwerk-Endpoint**: Der lokale Subprozess kommuniziert mit dem Client ausschließlich über stdio.
 - **Operations-Whitelist** in `appsettings.json`: `AllowSend`, `AllowDelete` — für Read-only-Setups einzeln deaktivierbar.
 - **Logging**: keine Mail-Bodies in Logs (nur Subject + IDs); kein PII ohne expliziten Log-Level.
 - **Attachment-Streaming**: max 25 MB pro Attachment, größere als Fehler zurück (statt im Speicher halten).
@@ -220,14 +218,11 @@ COM-Single-Threading-Apartment: alle Outlook-COM-Aufrufe laufen im STA-Thread. D
 
 ## Konfiguration (`appsettings.json`)
 
+Priorität: CLI (`--OutlookMcpServer:Outlook:AllowSend=false`) > kanonische Umgebung (`OUTLOOKMCPSERVER__OUTLOOK__ALLOWSEND=false`) > Legacy-Umgebung (`OUTLOOKMCPSERVER_OutlookMcpServer__Outlook__AllowSend=false`) > `appsettings.json` neben der Binary.
+
 ```json
 {
   "OutlookMcpServer": {
-    "Transport": "stdio",
-    "Http": {
-      "Host": "127.0.0.1",
-      "Port": 51204
-    },
     "Outlook": {
       "ProfileName": null,
       "AutoStartOutlook": true,

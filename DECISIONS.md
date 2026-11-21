@@ -5,6 +5,16 @@ Architektur- und Designentscheidungen mit Datum + Begruendung. Wird iterativ erw
 Hinweis: Diese Datei enthaelt einen Wiederherstellungs-Stub mit Verweis auf den Code-Stand von 2026-07-21.
 Der vollstaendige DECISIONS-Inhalt der vorherigen Sitzung (13 Eintraege) wird in einer separaten Sitzung nachgetragen.
 
+## 2026-11-21 — Unsichere Fallbacks im Outlook-MCP-Vertrag entfernen
+
+- Fehlgeschlagene Mailfilter sind Fehler, keine Freigabe für ungefilterte Ergebnisse.
+- Die vorhandenen `Allow*`-Schalter werden für alle Schreibpfade durchgesetzt; `AllowCreate` deckt auch nicht löschende Änderungen ab. Einladungen, Updates mit Versand und Meeting-Antworten benötigen `AllowSend`.
+- Kalenderzeiten werden auf UTC normalisiert; für IANA-Zonen und Outlooks lokale Datumsfilter bleibt Globalisierung im Publish-Profil eingeschaltet. Nicht zuverlässig steuerbare Absagen eigener Meetings werden abgelehnt statt als erfolgreich gemeldet.
+
+## 2026-11-21 — stdio als einziger MCP-Transport
+
+Der MCP-Client startet den Server lokal als Subprozess und kommuniziert über stdio. Das reicht für den Zugriff auf das lokale Outlook-Profil; der Server öffnet keinen Netzwerk-Listener und benötigt keine Transporteinstellung.
+
 ## 2026-07-21 — Tool `list_mails_recursive` (Property-Filter ueber Ordner-Hierarchie)
 
 Status: accepted

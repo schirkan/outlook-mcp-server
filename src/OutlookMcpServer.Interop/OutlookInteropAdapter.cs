@@ -15,9 +15,7 @@ namespace OutlookMcpServer.Interop;
 /// COM-Adapter: implementiert <see cref="IInteropOutlookAdapter"/> durch
 /// Aufrufe auf <c>Microsoft.Office.Interop.Outlook</c> (PIA / NuGet).
 /// <para>
-/// <b>Threading:</b> Outlook-COM ist single-threaded-affine. Alle Calls laufen
-/// serialisiert ueber <see cref="_comLock"/>. <b>Memory:</b> Jedes COM-Objekt
-/// wird in try/finally per <see cref="Marshal.ReleaseComObject"/> freigegeben.
+/// Die COM-Initialisierung wird über <see cref="_comLock"/> serialisiert.
 /// </para>
 /// </summary>
 public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
@@ -40,16 +38,15 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
 
     private async Task<dynamic> GetOutlookApplicationAsync(CancellationToken ct)
     {
-        if (_outlookApp is not null) return _outlookApp;
-
         await _comLock.WaitAsync(ct);
         try
         {
             if (_outlookApp is not null) return _outlookApp;
 
+            dynamic app;
             try
             {
-                _outlookApp = GetOrStartOutlookApplication();
+                app = GetOrStartOutlookApplication();
                 _logger.LogInformation("Outlook-Application instanziiert (oder bestehende uebernommen)");
             }
             catch (COMException)
@@ -61,11 +58,22 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
                         "Outlook laeuft nicht und AutoStartOutlook ist deaktiviert");
                 }
                 StartOutlookExe();
-                await WaitForOutlookReadyAsync(_options.Outlook.StartupTimeoutSeconds, ct);
+                app = await WaitForOutlookReadyAsync(_options.Outlook.StartupTimeoutSeconds, ct);
             }
 
-            InitializeMapiNamespace();
-            return _outlookApp!;
+            try
+            {
+                _mapiNamespace = app.GetNamespace("MAPI");
+                if (_mapiNamespace is null)
+                    throw new OutlookServiceException(ErrorCode.InternalError, "Outlook hat keinen MAPI-Namespace geliefert");
+                _outlookApp = app;
+                return app;
+            }
+            catch
+            {
+                ReleaseComObject(app);
+                throw;
+            }
         }
         finally
         {
@@ -90,7 +98,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
     /// eine aktive Outlook-Application. Wirft OutlookServiceException(OutlookNotRunning)
     /// wenn der Timeout erreicht wird.
     /// </summary>
-    private async Task WaitForOutlookReadyAsync(int timeoutSeconds, CancellationToken ct)
+    private async Task<dynamic> WaitForOutlookReadyAsync(int timeoutSeconds, CancellationToken ct)
     {
         var deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
         Exception? lastEx = null;
@@ -99,8 +107,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             ct.ThrowIfCancellationRequested();
             try
             {
-                _outlookApp = GetOrStartOutlookApplication();
-                return;
+                return GetOrStartOutlookApplication();
             }
             catch (COMException ex)
             {
@@ -112,15 +119,6 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
             ErrorCode.OutlookNotRunning,
             $"Outlook konnte nicht innerhalb von {timeoutSeconds}s gestartet werden",
             lastEx);
-    }
-
-    /// <summary>
-    /// Initialisiert _mapiNamespace aus der Outlook-Application. Setzt
-    /// voraus, dass _outlookApp bereits gesetzt ist.
-    /// </summary>
-    private void InitializeMapiNamespace()
-    {
-        _mapiNamespace = _outlookApp!.GetNamespace("MAPI");
     }
 
     private dynamic GetMapiNamespace()
@@ -291,6 +289,7 @@ public sealed partial class OutlookInteropAdapter : IInteropOutlookAdapter
         {
             return Task.FromResult(func());
         }
+        catch (OperationCanceledException) { throw; }
         catch (COMException ex)
         {
             _logger.LogWarning(ex, "COM-Fehler bei {Op}: HResult=0x{HResult:X8}", opName, ex.HResult);

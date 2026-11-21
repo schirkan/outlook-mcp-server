@@ -7,22 +7,9 @@ namespace OutlookMcpServer.Domain.Configuration;
 /// </summary>
 public sealed class OutlookMcpServerOptions
 {
-    /// <summary>"stdio" (default) oder "http".</summary>
-    public string Transport { get; set; } = "stdio";
-
-    public HttpOptions Http { get; set; } = new();
-
     public OutlookOptions Outlook { get; set; } = new();
 
     public LoggingOptions Logging { get; set; } = new();
-}
-
-public sealed class HttpOptions
-{
-    /// <summary>Nur Loopback erlaubt: "127.0.0.1" oder "localhost". "0.0.0.0" wird abgelehnt.</summary>
-    public string Host { get; set; } = "127.0.0.1";
-
-    public int Port { get; set; } = 51204;
 }
 
 public sealed class OutlookOptions

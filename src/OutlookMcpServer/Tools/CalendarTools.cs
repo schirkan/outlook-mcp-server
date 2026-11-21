@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using OutlookMcpServer.Domain.Abstractions;
+using OutlookMcpServer.Domain.Exceptions;
 using OutlookMcpServer.Domain.Models.Calendar;
 using OutlookMcpServer.Domain.Models.Common;
 using OutlookMcpServer.Domain.Models.Mail;
@@ -49,7 +50,7 @@ public sealed class CalendarTools
     // ===== Termine =====
 
     [McpServerTool(Name = "list_events")]
-    [Description("Listet Termine in einem Zeitfenster. Start/End als ISO-8601 + IANA-Zeitzone.")]
+    [Description("Listet Termine, die das Zeitfenster ueberlappen. Start/Ende als ISO-8601 + IANA-Zeitzone; Ausgabe in UTC.")]
     public async Task<PagedResult<CalendarEvent>> ListEvents(
         [Description("Optional: Kalender-ID (null = Standardkalender).")] string? calendarId,
         [Description("Fenster-Start (ISO-8601, z. B. 2026-07-15T09:00:00).")] string startDateTime,
@@ -58,7 +59,7 @@ public sealed class CalendarTools
         [Description("IANA-Zeitzone des End-Werts.")] string endTimeZone,
         [Description("Max Anzahl (1-250, Default 50). Bei mehr Terminen im Fenster: skip = N * top fuer Seite N (Pagination).")] int top = 50,
         [Description("Skip-Count fuer Pagination (Default 0).")] int skip = 0,
-        [Description("Optional: Filter-Ausdruck (z. B. 'isAllDay eq false').")] string? filter = null,
+        [Description("Optional: Outlook-Jet-Filter fuer Items.Restrict (z. B. '[AllDayEvent] = False').")] string? filter = null,
         CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("list_events calendarId={CalendarId} window={Start}/{End} top={Top} skip={Skip}",
@@ -75,7 +76,7 @@ public sealed class CalendarTools
     [Description("Liest einen einzelnen Termin inkl. Body, Attendees, Reminder.")]
     public async Task<CalendarEvent> GetEvent(
         [Description("Termin EntryID.")] string id,
-        [Description(@"Format des Termin-Body. Outlook speichert intern immer HTML — der Server konvertiert on-the-fly. Default = kein Body (null). 'markdown' / 'text' / 'html' liefert den Body im gewuenschten Format.")] string? bodyFormat = null,
+        [Description(@"Default = kein Body. 'text' und 'markdown' liefern Klartext; 'html' liefert kodierten Klartext als HTML, kein Original-HTML.")] string? bodyFormat = null,
         CancellationToken cancellationToken = default)
     {
         var bf = BodyFormatExtensions.ParseBodyFormat(bodyFormat);
@@ -94,7 +95,7 @@ public sealed class CalendarTools
         [Description("Ganztaegig (Default false).")] bool isAllDay = false,
         [Description("Optional: Ort-Anzeigename (z. B. 'Konferenzraum 3.14').")] string? location = null,
         [Description("Optional: Body Inhalt.")] string? body = null,
-        [Description("Optional: Body content type 'text' oder 'html' (Default text).")] string bodyContentType = "text",
+        [Description("Optional: Body content type 'text' (Default); HTML-Schreiben wird nicht unterstuetzt.")] string bodyContentType = "text",
         [Description("Optional: Komma-getrennte Attendees (Format: 'email:Type' oder nur 'email' fuer required). Type = required|optional|resource.")] string? attendees = null,
         [Description("Optional: Erinnerung in Minuten vor Start (null/0 = keine).")] int? reminderMinutesBeforeStart = null,
         [Description("Optional: Komma-getrennte Kategorien (z. B. 'Wichtig,Projekt').")] string? categories = null,
@@ -113,13 +114,7 @@ public sealed class CalendarTools
             End = new DateTimeTimeZone { DateTime = endDateTime, TimeZone = endTimeZone },
             IsAllDay = isAllDay,
             Location = location,
-            Body = body is null
-                ? null
-                : new ItemBody
-                {
-                    Content = body,
-                    ContentType = string.Equals(bodyContentType, "html", StringComparison.OrdinalIgnoreCase) ? ItemBodyType.Html : ItemBodyType.Text,
-                },
+            Body = BuildAppointmentBody(body, bodyContentType),
             Attendees = ParseAttendees(attendees),
             ReminderMinutesBeforeStart = reminderMinutesBeforeStart,
             Categories = SplitCsv(categories),
@@ -137,7 +132,7 @@ public sealed class CalendarTools
         [Description("Termin EntryID.")] string id,
         [Description("Optional: Neuer Subject.")] string? subject = null,
         [Description("Optional: Neuer Body Inhalt.")] string? body = null,
-        [Description("Optional: Body content type 'text' oder 'html'.")] string bodyContentType = "text",
+        [Description("Optional: Body content type 'text' (Default); HTML-Schreiben wird nicht unterstuetzt.")] string bodyContentType = "text",
         [Description("Optional: Neuer Start (ISO-8601).")] string? startDateTime = null,
         [Description("Optional: IANA-Zeitzone des neuen Starts.")] string? startTimeZone = null,
         [Description("Optional: Neues Ende (ISO-8601).")] string? endDateTime = null,
@@ -156,23 +151,13 @@ public sealed class CalendarTools
         var update = new EventUpdate
         {
             Subject = subject,
-            Body = body is null
-                ? null
-                : new ItemBody
-                {
-                    Content = body,
-                    ContentType = string.Equals(bodyContentType, "html", StringComparison.OrdinalIgnoreCase) ? ItemBodyType.Html : ItemBodyType.Text,
-                },
-            Start = (startDateTime is null || startTimeZone is null)
-                ? null
-                : new DateTimeTimeZone { DateTime = startDateTime, TimeZone = startTimeZone },
-            End = (endDateTime is null || endTimeZone is null)
-                ? null
-                : new DateTimeTimeZone { DateTime = endDateTime, TimeZone = endTimeZone },
+            Body = BuildAppointmentBody(body, bodyContentType),
+            Start = BuildPatchedDateTime(startDateTime, startTimeZone, "Start"),
+            End = BuildPatchedDateTime(endDateTime, endTimeZone, "Ende"),
             Location = location,
             Attendees = attendees is null ? null : ParseAttendees(attendees),
             ReminderMinutesBeforeStart = reminderMinutesBeforeStart,
-            Categories = attendees is null && categories is null ? null : SplitCsv(categories),
+            Categories = categories is null ? null : SplitCsv(categories),
             ShowAs = showAs is null ? null : ParseShowAs(showAs),
             Importance = importance is null ? null : ParseImportance(importance),
             Sensitivity = sensitivity is null ? null : ParseSensitivity(sensitivity),
@@ -182,10 +167,10 @@ public sealed class CalendarTools
     }
 
     [McpServerTool(Name = "delete_event")]
-    [Description("Loescht einen Termin. sendCancellation=true → Cancel-Nachricht an Attendees (Default true). Erfordert AllowDelete=true.")]
+    [Description("Loescht einen lokalen Termin. Eigene aktive Meetings muessen in Outlook abgesagt oder geloescht werden; COM bietet dafuer keine kontrollierbare Absage. Erfordert AllowDelete=true.")]
     public async Task DeleteEvent(
         [Description("Termin EntryID.")] string id,
-        [Description("Cancel-Notification an Attendees senden (Default true).")] bool sendCancellation = true,
+        [Description("Fordert bei einem eigenen Meeting eine Absage an (Default true; nicht per COM unterstuetzt).")] bool sendCancellation = true,
         CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("delete_event id={Id} sendCancellation={Send}", id, sendCancellation);
@@ -193,10 +178,10 @@ public sealed class CalendarTools
     }
 
     [McpServerTool(Name = "respond_to_event")]
-    [Description("Antwortet auf eine Einladung (Accept / Tentatively / Decline). Beim Organizer selbst ohne Effekt.")]
+    [Description("Sendet eine Antwort auf eine empfangene Einladung (Accept / Tentative / Decline).")]
     public async Task RespondToEvent(
         [Description("Termin EntryID.")] string id,
-        [Description("Antwort: 'accepted' | 'tentativelyAccepted' | 'declined' | 'none'.")] string response,
+        [Description("Antwort: 'accepted' | 'tentativelyAccepted' | 'declined'.")] string response,
         [Description("Optional: Antwort-Kommentar (wird in die Antwort-Email uebernommen).")] string? comment = null,
         CancellationToken cancellationToken = default)
     {
@@ -210,7 +195,7 @@ public sealed class CalendarTools
     }
 
     [McpServerTool(Name = "find_meeting_times")]
-    [Description("Sucht freie Zeitfenster fuer ein Meeting (Outlook Best-Slot-Heuristik). Gibt maximal 'maxCandidates' Vorschlaege zurueck.")]
+    [Description("Sucht freie Zeitfenster im eigenen Outlook-Standardkalender. Gibt maximal 'maxCandidates' Vorschlaege in UTC zurueck.")]
     public async Task<IReadOnlyList<MeetingTimeCandidate>> FindMeetingTimes(
         [Description("Gewuenschte Meeting-Dauer in Minuten.")] int durationMinutes,
         [Description("Suchfenster-Start (ISO-8601).")] string timeWindowStartDateTime,
@@ -235,6 +220,22 @@ public sealed class CalendarTools
     // ===== Helpers (private) =====
 
     private sealed record ListEventsArgs(string? CalendarId, DateTimeTimeZone Start, DateTimeTimeZone End, int Top, int Skip, string? Filter);
+
+    private static ItemBody? BuildAppointmentBody(string? body, string contentType)
+    {
+        if (body is null) return null;
+        if (!string.Equals(contentType, "text", StringComparison.OrdinalIgnoreCase))
+            throw new OutlookServiceException(ErrorCode.InvalidInput, "Outlook-Kalendertermine unterstuetzen nur 'text' als Body.");
+        return new ItemBody { Content = body, ContentType = ItemBodyType.Text };
+    }
+
+    private static DateTimeTimeZone? BuildPatchedDateTime(string? value, string? timeZone, string field)
+    {
+        if (value is null && timeZone is null) return null;
+        if (string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(timeZone))
+            throw new OutlookServiceException(ErrorCode.InvalidInput, $"{field}: Datum und Zeitzone muessen gemeinsam angegeben werden.");
+        return new DateTimeTimeZone { DateTime = value, TimeZone = timeZone };
+    }
 
     private static IReadOnlyList<string> SplitCsv(string? value) =>
         string.IsNullOrWhiteSpace(value)
@@ -300,11 +301,9 @@ public sealed class CalendarTools
 
     private static Response ParseResponse(string? value) => (value ?? "none").Trim().ToLowerInvariant() switch
     {
-        "organizer" => Response.Organizer,
         "tentativelyaccepted" => Response.TentativelyAccepted,
         "accepted" => Response.Accepted,
         "declined" => Response.Declined,
-        "notresponded" => Response.NotResponded,
-        _ => Response.None,
+        _ => throw new OutlookServiceException(ErrorCode.InvalidInput, "Antwort muss 'accepted', 'tentativelyAccepted' oder 'declined' sein."),
     };
 }

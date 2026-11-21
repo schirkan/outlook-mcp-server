@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using OutlookMcpServer.Domain.Exceptions;
 using OutlookMcpServer.Domain.Models.Calendar;
 using OutlookMcpServer.Domain.Models.Common;
@@ -120,6 +119,7 @@ public sealed partial class OutlookInteropAdapter
         string? filter = null,
         CancellationToken cancellationToken = default)
     {
+        var window = GetCalendarWindow(start, end);
         await GetOutlookApplicationAsync(cancellationToken);
         return await RunComAsync(() =>
         {
@@ -128,49 +128,20 @@ public sealed partial class OutlookInteropAdapter
                 : GetMapiNamespace().GetFolderFromID(calendarId, Type.Missing);
             try
             {
-                dynamic items = calendar.Items;
-                try
+                var slice = new List<CalendarEvent>();
+                var skipped = 0;
+                foreach (var (item, _, _) in EnumerateCalendarWindow((object)calendar, window.Start, window.End, filter, cancellationToken))
                 {
-                    items.IncludeRecurrences = true;
-
-                    var startDt = DateTime.Parse(start.DateTime, System.Globalization.CultureInfo.InvariantCulture);
-                    var endDt = DateTime.Parse(end.DateTime, System.Globalization.CultureInfo.InvariantCulture);
-                    var startStr = startDt.ToString("M/d/yyyy h:mm:ss tt", System.Globalization.CultureInfo.InvariantCulture);
-                    var endStr = endDt.ToString("M/d/yyyy h:mm:ss tt", System.Globalization.CultureInfo.InvariantCulture);
-                    var combined = $"[Start] >= '{startStr}' AND [End] <= '{endStr}'";
-                    if (!string.IsNullOrWhiteSpace(filter))
+                    if (skipped < skip)
                     {
-                        combined = $"({combined}) AND ({filter})";
+                        skipped++;
+                        continue;
                     }
-                    items = items.Restrict(combined);
-                    items.Sort("[Start]");
-
-                    int total = (int)items.Count;
-                    int startIdx = Math.Min(skip, total);
-                    int endIdx = Math.Min(skip + top, total);
-                    var slice = new List<CalendarEvent>(endIdx - startIdx);
-                    for (int i = startIdx; i < endIdx; i++)
-                    {
-                        dynamic item = items.Item(i + 1);
-                        try
-                        {
-                            slice.Add(MapAppointmentItem(item, null));
-                        }
-                        finally
-                        {
-                            ReleaseComObject(item);
-                        }
-                    }
-                    return new PagedResult<CalendarEvent>
-                    {
-                        Value = slice,
-                        NextSkip = endIdx < total ? endIdx : (int?)null,
-                    };
+                    if (slice.Count == top)
+                        return new PagedResult<CalendarEvent> { Value = slice, NextSkip = skip + top };
+                    slice.Add(MapAppointmentItem(item, null));
                 }
-                finally
-                {
-                    ReleaseComObject(items);
-                }
+                return new PagedResult<CalendarEvent> { Value = slice };
             }
             finally
             {
@@ -190,7 +161,8 @@ public sealed partial class OutlookInteropAdapter
             dynamic item = GetMapiNamespace().GetItemFromID(id, Type.Missing);
             try
             {
-                return MapAppointmentItem(item, bodyFormat);
+                RequireAppointment((object?)item);
+                return MapAppointmentItem((object)item, bodyFormat);
             }
             finally
             {

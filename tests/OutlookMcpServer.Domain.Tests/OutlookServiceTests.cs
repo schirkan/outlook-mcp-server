@@ -151,6 +151,55 @@ public sealed class OutlookServiceTests
     // ===== Calendar-Validation =====
 
     [Fact]
+    public async Task ReadOnly_BlocksPreviouslyUnguardedMutations()
+    {
+        var adapter = new FakeInteropAdapter();
+        var svc = CreateService(new OutlookOptions { AllowCreate = false, AllowDelete = false, AllowSend = false }, adapter);
+        Func<Task>[] changes =
+        {
+            () => svc.UpdateMailAsync("mail", new MailUpdate { IsRead = true }),
+            () => svc.MoveMailAsync("mail", "inbox"),
+            () => svc.CopyMailAsync("mail", "inbox"),
+            () => svc.UpdateEventAsync("event", new EventUpdate { Subject = "new" }),
+            () => svc.OpenItemByIdAsync("mail"),
+        };
+
+        foreach (var change in changes)
+            Assert.Equal(ErrorCode.PermissionDenied, (await Assert.ThrowsAsync<OutlookServiceException>(change)).Code);
+
+        Assert.Empty(adapter.Calls);
+    }
+
+    [Fact]
+    public async Task SendDisabled_BlocksCalendarNotificationsButAllowsLocalChanges()
+    {
+        var adapter = new FakeInteropAdapter();
+        var svc = CreateService(new OutlookOptions { AllowSend = false }, adapter);
+        var invite = new CreateEventRequest
+        {
+            Subject = "Test meeting",
+            Start = new DateTimeTimeZone { DateTime = "2026-07-15T09:00:00", TimeZone = "UTC" },
+            End = new DateTimeTimeZone { DateTime = "2026-07-15T10:00:00", TimeZone = "UTC" },
+            Attendees = new[] { new EventAttendeeInput { Email = "test@example.com" } },
+        };
+        Func<Task>[] sends =
+        {
+            () => svc.CreateEventAsync(invite),
+            () => svc.UpdateEventAsync("event", new EventUpdate { SendUpdate = true }),
+            () => svc.DeleteEventAsync("event", sendCancellation: true),
+            () => svc.RespondToEventAsync("event", new RespondToEventRequest { Response = Response.Accepted }),
+        };
+
+        foreach (var send in sends)
+            Assert.Equal(ErrorCode.SendDisabled, (await Assert.ThrowsAsync<OutlookServiceException>(send)).Code);
+
+        Assert.Empty(adapter.Calls);
+        Assert.Equal("EVT-1", await svc.CreateEventAsync(invite with { SendInvitations = false }));
+        await svc.UpdateEventAsync("event", new EventUpdate { SendUpdate = false });
+        await svc.DeleteEventAsync("event", sendCancellation: false);
+    }
+
+    [Fact]
     public async Task ListEventsAsync_InvalidTimeZone_ThrowsInvalidInput()
     {
         var svc = CreateService(new OutlookOptions(), new FakeInteropAdapter());

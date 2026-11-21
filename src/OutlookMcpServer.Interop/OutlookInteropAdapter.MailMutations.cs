@@ -94,11 +94,13 @@ public sealed partial class OutlookInteropAdapter
         if (!string.IsNullOrEmpty(request.ForwardFromId))
         {
             sourceItem = _mapiNamespace!.GetItemFromID(request.ForwardFromId, Type.Missing);
+            RequireMailItem((object?)sourceItem);
             return sourceItem!.Forward();
         }
         if (!string.IsNullOrEmpty(request.ReplyToId))
         {
             sourceItem = _mapiNamespace!.GetItemFromID(request.ReplyToId, Type.Missing);
+            RequireMailItem((object?)sourceItem);
             return request.ReplyAll ? sourceItem!.ReplyAll() : sourceItem!.Reply();
         }
         return _outlookApp!.CreateItem(0);
@@ -164,6 +166,7 @@ public sealed partial class OutlookInteropAdapter
             dynamic mail = GetMapiNamespace().GetItemFromID(id, Type.Missing);
             try
             {
+                RequireMailItem((object?)mail);
                 if (update.IsRead is { } isRead)
                 {
                     mail.UnRead = !isRead;
@@ -197,6 +200,7 @@ public sealed partial class OutlookInteropAdapter
             dynamic mail = GetMapiNamespace().GetItemFromID(id, Type.Missing);
             try
             {
+                RequireMailItem((object?)mail);
                 dynamic destFolder = GetFolderByIdOrWellKnownName(destinationFolderId)
                     ?? throw new OutlookServiceException(
                         ErrorCode.FolderNotFound,
@@ -236,13 +240,14 @@ public sealed partial class OutlookInteropAdapter
             dynamic mail = GetMapiNamespace().GetItemFromID(id, Type.Missing);
             try
             {
-                dynamic copy = mail.Copy();
+                RequireMailItem((object?)mail);
+                dynamic destFolder = GetFolderByIdOrWellKnownName(destinationFolderId)
+                    ?? throw new OutlookServiceException(
+                        ErrorCode.FolderNotFound,
+                        $"Zielordner nicht gefunden: '{destinationFolderId}'.");
                 try
                 {
-                    dynamic destFolder = GetFolderByIdOrWellKnownName(destinationFolderId)
-                        ?? throw new OutlookServiceException(
-                            ErrorCode.FolderNotFound,
-                            $"Zielordner nicht gefunden: '{destinationFolderId}'.");
+                    dynamic copy = mail.Copy();
                     try
                     {
                         dynamic moved = copy.Move(destFolder);
@@ -257,12 +262,12 @@ public sealed partial class OutlookInteropAdapter
                     }
                     finally
                     {
-                        ReleaseComObject(destFolder);
+                        ReleaseComObject(copy);
                     }
                 }
                 finally
                 {
-                    ReleaseComObject(copy);
+                    ReleaseComObject(destFolder);
                 }
             }
             finally
@@ -283,38 +288,7 @@ public sealed partial class OutlookInteropAdapter
             dynamic mail = GetMapiNamespace().GetItemFromID(id, Type.Missing);
             try
             {
-                if (permanent)
-                {
-                    dynamic deletedItems = GetMapiNamespace().GetDefaultFolder(5);
-                    try
-                    {
-                        dynamic inDeleted = mail.Move(deletedItems);
-                        try
-                        {
-                            inDeleted.Delete();
-                        }
-                        finally
-                        {
-                            ReleaseComObject(inDeleted);
-                        }
-                    }
-                    finally
-                    {
-                        ReleaseComObject(deletedItems);
-                    }
-                }
-                else
-                {
-                    dynamic deletedItems = GetMapiNamespace().GetDefaultFolder(5);
-                    try
-                    {
-                        mail.Move(deletedItems);
-                    }
-                    finally
-                    {
-                        ReleaseComObject(deletedItems);
-                    }
-                }
+                DeleteMailItem((object)mail, permanent);
                 return true;
             }
             finally
@@ -322,5 +296,47 @@ public sealed partial class OutlookInteropAdapter
                 ReleaseComObject(mail);
             }
         }, nameof(DeleteMailAsync));
+    }
+
+    private static void RequireMailItem(object? item)
+    {
+        if (item is null || (int)((dynamic)item).Class != 43 /* olMail */)
+            throw new OutlookServiceException(ErrorCode.MailNotFound, "Das Outlook-Objekt ist keine E-Mail");
+    }
+
+    internal static void DeleteMailItem(object? item, bool permanent)
+    {
+        RequireMailItem(item);
+        dynamic mail = item!;
+
+        dynamic? parent = null;
+        dynamic? store = null;
+        dynamic? trash = null;
+        dynamic? moved = null;
+        try
+        {
+            parent = mail.Parent;
+            store = parent.Store;
+            int trashFolderType = OlEnumMappings.ToOlDefaultFolder(WellKnownFolder.DeletedItems)!.Value;
+            trash = store.GetDefaultFolder(trashFolderType);
+            if (trash is null)
+                throw new OutlookServiceException(ErrorCode.FolderNotFound, "Papierkorb des Postfachs nicht gefunden");
+
+            if (string.Equals((string)parent.EntryID, (string)trash.EntryID, StringComparison.OrdinalIgnoreCase))
+            {
+                if (permanent) mail.Delete();
+                return;
+            }
+
+            moved = mail.Move(trash);
+            if (permanent) moved.Delete();
+        }
+        finally
+        {
+            ReleaseComObject(moved);
+            ReleaseComObject(trash);
+            ReleaseComObject(store);
+            ReleaseComObject(parent);
+        }
     }
 }

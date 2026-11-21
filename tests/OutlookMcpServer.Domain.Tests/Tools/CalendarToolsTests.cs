@@ -1,4 +1,7 @@
+using System.Reflection;
 using Microsoft.Extensions.Logging.Abstractions;
+using OutlookMcpServer.Domain.Abstractions;
+using OutlookMcpServer.Domain.Exceptions;
 using OutlookMcpServer.Domain.Models.Calendar;
 using OutlookMcpServer.Domain.Models.Common;
 using OutlookMcpServer.Domain.Models.Mail;
@@ -63,13 +66,56 @@ public sealed class CalendarToolsTests
         Assert.Contains("response=Declined", entry);
     }
 
-    [Fact]
-    public async Task RespondToEvent_UnknownResponseMapsToNone()
+    [Theory]
+    [InlineData("garbage")]
+    [InlineData("none")]
+    [InlineData("organizer")]
+    [InlineData("notResponded")]
+    public async Task RespondToEvent_InvalidResponseIsRejected(string response)
     {
         var (tools, svc) = Create();
-        await tools.RespondToEvent(id: "EVT-1", response: "garbage");
-        var entry = svc.Calls.Single(c => c.StartsWith(nameof(FakeOutlookService.RespondToEventAsync)));
-        Assert.Contains("response=None", entry);
+        var error = await Assert.ThrowsAsync<OutlookServiceException>(() => tools.RespondToEvent("EVT-1", response));
+        Assert.Equal(ErrorCode.InvalidInput, error.Code);
+        Assert.Empty(svc.Calls);
+    }
+
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("", "")]
+    [InlineData("Wichtig, Projekt", "Wichtig|Projekt")]
+    public async Task UpdateEvent_AttendeePatchDoesNotSetCategoriesUnlessExplicit(string? categories, string? expected)
+    {
+        var service = DispatchProxy.Create<IOutlookService, UpdateCapture>();
+        var tools = new CalendarTools(service, NullLogger<CalendarTools>.Instance);
+        await tools.UpdateEvent("EVT-1", attendees: "bob@example.com:optional", categories: categories, sendUpdate: false);
+
+        var update = Assert.IsType<EventUpdate>(((UpdateCapture)(object)service).Update);
+        Assert.Equal(AttendeeType.Optional, Assert.Single(update.Attendees!).Type);
+        Assert.Equal(expected, update.Categories is null ? null : string.Join("|", update.Categories));
+        Assert.False(update.SendUpdate);
+    }
+
+    [Fact]
+    public async Task UpdateEvent_HtmlBodyOrIncompleteTimeIsRejectedBeforeService()
+    {
+        var (tools, svc) = Create();
+        var html = await Assert.ThrowsAsync<OutlookServiceException>(() => tools.UpdateEvent("EVT-1", body: "<b>Hi</b>", bodyContentType: "html"));
+        var time = await Assert.ThrowsAsync<OutlookServiceException>(() => tools.UpdateEvent("EVT-1", startDateTime: "2026-07-15T09:00:00"));
+        Assert.Equal(ErrorCode.InvalidInput, html.Code);
+        Assert.Equal(ErrorCode.InvalidInput, time.Code);
+        Assert.Empty(svc.Calls);
+    }
+
+    public class UpdateCapture : DispatchProxy
+    {
+        public EventUpdate? Update { get; private set; }
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            Assert.Equal(nameof(IOutlookService.UpdateEventAsync), targetMethod?.Name);
+            Update = Assert.IsType<EventUpdate>(args![1]);
+            return Task.CompletedTask;
+        }
     }
 
     [Fact]
@@ -100,13 +146,13 @@ public sealed class CalendarToolsTests
             endTimeZone: "Europe/Berlin",
             top: 10,
             skip: 5,
-            filter: "isAllDay eq false");
+            filter: "[AllDayEvent] = False");
         Assert.NotNull(page);
         var entry = svc.Calls.Single(c => c.StartsWith(nameof(FakeOutlookService.ListEventsAsync)));
         Assert.Contains("cal=CAL-1", entry);
         Assert.Contains("top=10", entry);
         Assert.Contains("skip=5", entry);
-        Assert.Contains("filter=isAllDay eq false", entry);
+        Assert.Contains("filter=[AllDayEvent] = False", entry);
     }
 
     [Fact]
